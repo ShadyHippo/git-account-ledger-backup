@@ -40,7 +40,7 @@ while :; do
     if [ "$n" -eq 0 ]; then
         break
     fi
-    jq -r '.[] | [.full_name, (.archived | tostring)] | @tsv' <<< "$out" >> "$TMP/repos.tsv"
+    jq -r '.[] | [.full_name, (.archived | tostring), (.default_branch // "")] | @tsv' <<< "$out" >> "$TMP/repos.tsv"
     if [ "$n" -lt 100 ]; then
         break
     fi
@@ -65,7 +65,7 @@ cp -f "$TMP/seen.txt" "$ROOT/repos.known"
 ok=0
 failed=0
 
-while IFS=$'\t' read -r full _archived; do
+while IFS=$'\t' read -r full _archived default_branch; do
     [ -n "$full" ] || continue
     dir="$MIRRORS/$full.git"
     url="$GIT_BASE_URL/$full.git"
@@ -121,8 +121,23 @@ while IFS=$'\t' read -r full _archived; do
         fi
     done < "$TMP/before.txt"
 
-    git -C "$dir" fsck --connectivity-only -q 2>> "$LOG_DIR/fsck.log" \
-        || log "fsck reported problems: $full"
+    # Track the upstream default branch, or a clone of the mirror checks out
+    # nothing and fsck complains that HEAD is unborn.
+    if [ -n "${default_branch:-}" ] \
+        && git -C "$dir" rev-parse --verify -q "refs/heads/$default_branch" > /dev/null; then
+        git -C "$dir" symbolic-ref HEAD "refs/heads/$default_branch"
+    fi
+
+    # Skip empty mirrors: fsck on a repo with no refs only emits a notice.
+    if [ -n "$(git -C "$dir" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]; then
+        if ! git -C "$dir" fsck --connectivity-only --no-progress --no-dangling > "$TMP/fsck.out" 2>&1; then
+            log "fsck reported problems: $full"
+        fi
+        if [ -s "$TMP/fsck.out" ]; then
+            printf '%s %s\n' "$(ts)" "$full" >> "$LOG_DIR/fsck.log"
+            sed 's/^/    /' "$TMP/fsck.out" >> "$LOG_DIR/fsck.log"
+        fi
+    fi
 
     ok=$((ok + 1))
 done < "$TMP/repos.tsv"

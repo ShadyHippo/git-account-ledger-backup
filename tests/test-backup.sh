@@ -20,7 +20,7 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check() { if eval "$2" > /dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
 
 json_repos() { # $1: extra object or empty
-    printf '[{"full_name":"alice/repo-one","archived":false}%s]\n' "${1:-}"
+    printf '[{"full_name":"alice/repo-one","archived":false,"default_branch":"main"}%s]\n' "${1:-}"
 }
 
 echo "== seeding local origins"
@@ -55,7 +55,7 @@ sha_d=$(git rev-parse HEAD)
 git push -q origin feature
 git checkout -q main
 
-json_repos ',{"full_name":"alice/repo-two","archived":false}' > "$FAKE_REPOS_JSON"
+json_repos ',{"full_name":"alice/repo-two","archived":false,"default_branch":"main"}' > "$FAKE_REPOS_JSON"
 mirror="$ROOT/mirrors/alice/repo-one.git"
 
 echo "== first run creates mirrors"
@@ -65,6 +65,10 @@ check "feature branch mirrored"   "git -C '$mirror' rev-parse -q --verify refs/h
 check "second repo mirrored"      "[ -d '$ROOT/mirrors/alice/repo-two.git' ]"
 check "no archive refs yet"       "[ -z \"\$(git -C '$mirror' for-each-ref refs/archive)\" ]"
 check "repos.known has 2 lines"   "[ \"\$(wc -l < '$ROOT/repos.known')\" = 2 ]"
+check "fsck log is clean"         "[ ! -s '$ROOT/log/fsck.log' ]"
+check "mirror HEAD tracks upstream" "[ \"\$(git -C '$mirror' symbolic-ref HEAD)\" = 'refs/heads/main' ]"
+check "mirror clones to a worktree" "git clone -q '$mirror' '$tmp/clone1'"
+check "cloned worktree has content" "[ -f '$tmp/clone1/f' ]"
 
 echo "== a fast-forward must not create archive refs"
 git -C "$tmp/work" commit -q --allow-empty -m C
