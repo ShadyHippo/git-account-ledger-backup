@@ -1,13 +1,18 @@
 IMAGE ?= ghcr.io/shadyhippo/git-account-ledger-backup
 TAG   ?= latest
 
-.PHONY: test build push release
+.PHONY: test test-unit test-adversarial build push release
 
-test:
+test: test-unit test-adversarial
+
+test-unit:
 	bash tests/test-backup.sh
 
+test-adversarial:
+	bash tests/test-adversarial.sh
+
 build:
-	buildah bud -t $(IMAGE):$(TAG) .
+	buildah bud --format docker -t $(IMAGE):$(TAG) .
 
 push:
 	buildah push $(IMAGE):$(TAG)

@@ -168,15 +168,63 @@ when" is answerable later.
 
 ## Recovery
 
-**A branch that was force-pushed or deleted**
+Three questions, in order: *which state do I want*, *which SHA is that*, *do I
+have the object*.
+
+### How hard it actually is
+
+| Situation | Effort |
+|---|---|
+| A branch was force-pushed or deleted while you were watching | **seconds** — `restore.sh events`, push the `before` SHA back |
+| You know roughly when, not which SHA | **seconds** — `restore.sh state <repo> <timestamp>` |
+| The commit was fetched at some point and is no longer reachable | **seconds** — it is pinned; `restore.sh pinned`, then `git branch rescue <sha>` |
+| Pushed and rewritten away *between* two backup runs | **minutes** — `restore.sh rescue`, if upstream still has the object |
+| Upstream collected the object and it was never fetched | **unrecoverable** — the only real loss window |
+
+Everything is keyed on full SHAs, so recovery never depends on the current
+branch surviving.
+
+### What did the branch look like at 14:32?
 
 ```bash
-docker exec gitarchive /usr/local/bin/restore.sh events owner/repo
-# → {"at":"...","actor":"agent","ref":"refs/heads/master",
-#    "before":"<sha-you-want>","after":"...","forced":true}
+docker exec gitarchive /usr/local/bin/restore.sh state owner/repo 2026-10-21T14:32:00Z
 ```
 
-**A repo that was deleted upstream**
+```
+main                          4c1e...  present
+release/1.0                   a992...  present
+feature/rewrite               8b03...  MISSING -> restore.sh rescue owner/repo 8b03...
+```
+
+That is reconstructed from the ledger's recorded push events, so it is accurate
+to the push, not to the poll interval — each event carries GitHub's `created_at`.
+Add a destination to materialise it:
+
+```bash
+docker exec gitarchive /usr/local/bin/restore.sh state owner/repo 2026-10-21T14:32:00Z /tmp/then
+```
+
+which clones the mirror and force-creates each branch at its historical tip, so
+`/tmp/then` is that project as it stood at that moment.
+
+### Rescuing a commit the ledger knows about
+
+If an agent force-pushed twice between two backup runs, the mirror saw only the
+final state. The intermediate commit was never downloaded — but the ledger has
+its SHA from the `PushEvent`. GitHub keeps unreachable objects for a while and
+permits fetching by SHA, so this usually still works:
+
+```bash
+docker exec gitarchive /usr/local/bin/restore.sh rescue owner/repo <sha>
+```
+
+It fetches that one commit from upstream, pins it to `refs/archive/<sha>`, and
+records the rescue in `pinned.tsv`. If upstream has already collected it, the
+command says so plainly instead of failing obscurely. This is the trade for the
+`BACKUP_INTERVAL` window, and it is why the ledger stores `before` as well as
+`after`.
+
+### Pushing a recovered state back
 
 ```bash
 export GITHUB_WRITE_TOKEN=...   # in your shell only, never in the container
@@ -189,18 +237,39 @@ is never pushed into the new repo. If any commit touches `.github/workflows`,
 GitHub rejects the push unless the token has **Workflows: write** — test this
 once now, not in the middle of a disaster.
 
-**A commit nobody remembers**
+### Proof: adversarial sequences
+
+`tests/test-adversarial.sh` runs one repo through a deliberately misbehaving
+agent, takes a backup after every step, then `git gc --prune=now` and checks
+every state is still there *and* byte-identical:
+
+| Step | Action | Result |
+|---|---|---|
+| S1 | force-push to a divergent root, orphaning A→B→C | C pinned, B and A survive through it |
+| S2 | real push D on top of the divergent root | D fetches normally, C still pinned |
+| S3 | force-push back to A, orphaning X→D | D pinned, X survives through it |
+| S4 | real push E on A (B, C unreachable again) | B and C survive via the earlier pin |
+| S5 | force-push to an unrelated orphan F | E pinned |
+| S6 | delete the branch entirely | F pinned, no branch left |
+| S7 | recreate main at an old commit | resolves to A, nothing lost |
+| S8 | commit reachable only via a tag, then retarget the tag | old tag commit pinned |
+| S9 | two unrelated force-pushes inside one interval | final state kept; intermediate flagged and recoverable by `rescue` |
+
+All eleven commits survive the gc, and `show <sha>:f` returns the original
+content for each. Reconstructed states at four different timestamps match what
+the branch pointed at then.
+
+That is 119 checks across both suites:
 
 ```bash
-docker exec gitarchive /usr/local/bin/restore.sh pinned owner/repo
-docker exec gitarchive /usr/local/bin/restore.sh clone owner/repo /tmp/r
-git -C /tmp/r branch rescue <sha>
+make test
 ```
 
-**Off-array copy.** `bundles/YYYY-MM/` is self-contained; each file is
-`git bundle verify`-able and cloneable with no dependency on this container.
-Sync that tree to an external drive or object storage monthly. That is the copy
-that survives the NAS.
+## Off-array copy
+
+`bundles/YYYY-MM/` is self-contained; each file is `git bundle verify`-able and
+cloneable with no dependency on this container. Sync that tree to an external
+drive or object storage monthly. That is the copy that survives the NAS.
 
 ## Quick start
 
@@ -257,6 +326,9 @@ server can read, only you can rewrite.
   objects exist solely in `mirrors/<owner>/<repo>.git/lfs`. If you rely on LFS
   and need the off-array copy to be complete, handle that directory separately.
 - A commit pushed and force-pushed away inside one interval is never fetched.
+  The ledger records the SHA, actor and time, and `restore.sh rescue` can pull
+  it back from upstream while upstream still holds it. Once upstream has
+  collected it, that commit is genuinely gone.
   The ledger records the SHA, actor and time, but the objects do not exist
   locally. Shorten `BACKUP_INTERVAL` to narrow this.
 - Bundle retention (`BUNDLE_KEEP`) is the one place this project deletes
@@ -269,7 +341,7 @@ server can read, only you can rewrite.
 ## Development
 
 ```bash
-make test     # 55 checks, no network, no Docker
+make test     # 119 checks, no network, no Docker (unit + adversarial)
 make build
 ```
 
