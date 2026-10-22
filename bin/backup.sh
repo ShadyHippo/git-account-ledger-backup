@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Append-only GitHub archive.
+# Append-only GitHub archive, multi-source.
 #
-# Guarantees:
-#   * never deletes a local repository, even if it disappears upstream
-#   * never lets a force-push or branch deletion destroy the previous tips
-#   * aborts without side effects if discovery fails
+# Guarantees, per source:
+#   * never deletes a local repository, even if the repo or the whole account
+#     disappears upstream
+#   * never lets a force-push or branch deletion destroy a previous tip
+#   * falls back to the known repo list when the API is unavailable, so a
+#     transient outage or revoked token does not stop the backup
 set -Eeuo pipefail
 umask 077
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=common.sh
 . "$SELF_DIR/common.sh"
+# shellcheck source=config.sh
+. "$SELF_DIR/config.sh"
 
 LOG_TAG=backup
 LOG_FILE="$LOG_DIR/backup.log"
 ensure_dirs
-
-TOKEN=$(read_token) || die "no token: set GITHUB_RO_TOKEN or mount GITHUB_RO_TOKEN_FILE"
-[ -n "$TOKEN" ] || die "token is empty"
-export TOKEN
-export GITHUB_RO_TOKEN="$TOKEN"
+load_config
 
 exec 9>"$ROOT/.lock.mirror"
 flock -n 9 || { log "another mirror job holds the lock, skipping"; exit 0; }
@@ -27,124 +27,292 @@ flock -n 9 || { log "another mirror job holds the lock, skipping"; exit 0; }
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-GIT_OPTS=(-c credential.helper="$SELF_DIR/cred-helper")
+declare -A SEEN=()   # owner/repo -> source that owns it, prevents double storage
+LOST=0               # mirrors that vanished from disk and had to be rebuilt
 
-# ---------------------------------------------------------------- discovery --
-: > "$TMP/repos.tsv"
-page=1
-while :; do
-    if ! out=$(api_get "$API_BASE_URL/user/repos?per_page=100&page=$page&visibility=all&sort=full_name&affiliation=owner,collaborator,organization_member"); then
-        die "repository discovery failed on page $page; aborting without touching anything"
+# --------------------------------------------------------------- discovery --
+
+_discover_account() { # token
+    local token=$1 page=1 out n
+    while :; do
+        out=$(gh_api "$token" "$API_BASE_URL/user/repos?per_page=100&page=$page&visibility=all&sort=full_name&affiliation=owner,collaborator,organization_member") || return 1
+        n=$(jq 'length' <<< "$out")
+        if [ "$n" -eq 0 ]; then break; fi
+        jq -r '.[] | [.full_name, (.default_branch // "")] | @tsv' <<< "$out"
+        if [ "$n" -lt 100 ]; then break; fi
+        page=$((page + 1))
+    done
+}
+
+_discover_owner() { # token(optional), owner
+    local token=$1 owner=$2 base page out n url
+    for base in users orgs; do
+        page=1
+        local ok=1
+        while :; do
+            url="$API_BASE_URL/$base/$owner/repos?per_page=100&page=$page&sort=full_name"
+            [ "$base" = "orgs" ] && url="$url&type=all"
+            if ! out=$(gh_api "$token" "$url"); then
+                ok=0
+                break
+            fi
+            n=$(jq 'length' <<< "$out")
+            if [ "$n" -eq 0 ]; then break; fi
+            jq -r '.[] | [.full_name, (.default_branch // "")] | @tsv' <<< "$out"
+            if [ "$n" -lt 100 ]; then break; fi
+            page=$((page + 1))
+        done
+        [ "$ok" -eq 1 ] && return 0
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------ mirror --
+
+fetch_repo() { # name, dir, default_branch, errfile
+    local name=$1 dir=$2 db=$3 err=$4
+    local -a specs toks args
+    mapfile -t specs < <(build_refspecs "${SRC_POLICY[$name]:-all}" "$db")
+    read -r -a toks <<< "$(source_token_list "$name")"
+
+    args=(fetch -q --prune --no-write-fetch-head)
+    [ -f "$dir/shallow" ] && args+=(--depth 1)
+
+    if [ "${#toks[@]}" -eq 0 ]; then
+        GIT_TERMINAL_PROMPT=0 git -C "$dir" -c credential.helper= \
+            "${args[@]}" origin "${specs[@]}" 2> "$err"
+        return $?
     fi
-    n=$(jq 'length' <<< "$out")
-    if [ "$n" -eq 0 ]; then
-        break
-    fi
-    jq -r '.[] | [.full_name, (.archived | tostring), (.default_branch // "")] | @tsv' <<< "$out" >> "$TMP/repos.tsv"
-    if [ "$n" -lt 100 ]; then
-        break
-    fi
-    page=$((page + 1))
-done
 
-sort -o "$TMP/repos.tsv" "$TMP/repos.tsv"
-[ -s "$TMP/repos.tsv" ] || die "discovery returned zero repositories; refusing to continue"
+    local t
+    for t in "${toks[@]}"; do
+        if GITHUB_RO_TOKEN="$t" git -C "$dir" -c credential.helper="$SELF_DIR/cred-helper" \
+                "${args[@]}" origin "${specs[@]}" 2> "$err"; then
+            return 0
+        fi
+    done
+    return 1
+}
 
-cut -f1 "$TMP/repos.tsv" > "$TMP/seen.txt"
-
-# A repo vanishing upstream must never delete anything locally. Record it.
-if [ -s "$ROOT/repos.known" ]; then
-    while read -r gone; do
-        log "no longer visible upstream, mirror kept: $gone"
-        printf '%s\t%s\n' "$(ts)" "$gone" >> "$LEDGER_DIR/vanished.tsv"
-    done < <(comm -23 <(sort -u "$ROOT/repos.known") "$TMP/seen.txt")
-fi
-cp -f "$TMP/seen.txt" "$ROOT/repos.known"
-
-# ------------------------------------------------------------------- mirror --
-ok=0
-failed=0
-
-while IFS=$'\t' read -r full _archived default_branch; do
-    [ -n "$full" ] || continue
-    dir="$MIRRORS/$full.git"
-    url="$GIT_BASE_URL/$full.git"
+mirror_repo() { # name, owner/repo, default_branch
+    local name=$1 full=$2 db=$3
+    local dir shallow=0 lost=0 err="$TMP/fetch.err"
+    dir=$(mirror_path "$name" "$full")
 
     if [ ! -d "$dir" ]; then
-        log "creating mirror: $full"
+        if grep -qxF "$full" "$TMP/prev.known" 2>/dev/null; then
+            log "CRITICAL mirror was missing from disk, rebuilding from scratch: $name $full (its history and pinned tips are gone)"
+            lost=1
+            LOST=$((LOST + 1))
+        else
+            log "creating mirror: $name $full"
+        fi
         mkdir -p -- "$(dirname -- "$dir")"
         git init -q --bare "$dir"
-        git -C "$dir" config remote.origin.url "$url"
-        git -C "$dir" config remote.origin.fetch '+refs/heads/*:refs/heads/*'
-        git -C "$dir" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
-        # We repack on our own schedule, and we never prune implicitly.
+        git -C "$dir" config remote.origin.url "$GIT_BASE_URL/$full.git"
         git -C "$dir" config gc.auto 0
         git -C "$dir" config gc.pruneExpire never
     fi
 
-    git -C "$dir" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags > "$TMP/before.txt"
+    git -C "$dir" for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags > "$TMP/before.refs"
 
-    # Explicit refspecs only. `clone --mirror` / `remote update` use
-    # +refs/*:refs/* and would prune refs/archive/* along with the branches.
-    if ! git -C "$dir" "${GIT_OPTS[@]}" fetch --prune --no-write-fetch-head origin \
-            >> "$TMP/fetch.out" 2>> "$LOG_FILE"; then
-        log "fetch failed: $full"
-        failed=$((failed + 1))
-        continue
-    fi
-
-    # LFS objects are not in the pack, and --mirror silently omits them.
-    # Run before pinning so a local-only archive ref is never sent to the API.
-    if [ -n "$(git -C "$dir" lfs ls-files --all 2>/dev/null | head -1)" ]; then
-        if ! git -C "$dir" "${GIT_OPTS[@]}" lfs fetch --all origin >> "$LOG_DIR/lfs.log" 2>&1; then
-            log "lfs fetch failed: $full"
+    if ! fetch_repo "$name" "$dir" "$db" "$err"; then
+        sed 's/^/    /' "$err" >> "$LOG_FILE" 2>/dev/null || true
+        if grep -qiE 'not found|does not appear to be a git repository' "$err" 2>/dev/null; then
+            retire_repo "$name" "$full" "not found upstream"
+            return 0
         fi
+        log "fetch failed: $name $full"
+        return 1
     fi
 
-    # Pin anything that just became unreachable. Fast-forwards need no pin:
-    # the old tip is still an ancestor of the new one, so it stays reachable.
+    if [ -n "${db:-}" ] && git -C "$dir" rev-parse --verify -q "refs/heads/$db" > /dev/null; then
+        git -C "$dir" symbolic-ref HEAD "refs/heads/$db"
+    fi
+
+    [ -f "$dir/shallow" ] && shallow=1
+
+    # LFS objects are not in the pack. Fetch them before pinning so a
+    # local-only archive ref is never handed to the LFS API.
+    if [ -n "$(git -C "$dir" lfs ls-files --all 2>/dev/null | head -1)" ]; then
+        local -a lt
+        read -r -a lt <<< "$(source_token_list "$name")"
+        local t
+        for t in "${lt[@]:-}"; do
+            if GITHUB_RO_TOKEN="$t" git -C "$dir" -c credential.helper="$SELF_DIR/cred-helper" \
+                    lfs fetch --all origin >> "$LOG_DIR/lfs.log" 2>&1; then
+                break
+            fi
+        done
+    fi
+
+    # Pin anything that just became unreachable. A fast-forward needs no pin:
+    # the old tip is still an ancestor of the new one. A shallow mirror cannot
+    # answer ancestry questions, so it pins on any ref change.
+    local sha ref now
     while read -r sha ref; do
         [ -n "${sha:-}" ] || continue
         now=$(git -C "$dir" rev-parse --verify -q "$ref" || true)
-        if [ "$now" = "$sha" ]; then
-            continue
-        fi
-        if [ -n "$now" ] && git -C "$dir" merge-base --is-ancestor "$sha" "$now" 2>/dev/null; then
+        [ "$now" = "$sha" ] && continue
+        if [ "$shallow" -eq 0 ] && [ -n "$now" ] \
+            && git -C "$dir" merge-base --is-ancestor "$sha" "$now" 2>/dev/null; then
             continue
         fi
         if git -C "$dir" update-ref "refs/archive/$sha" "$sha"; then
-            printf '%s\t%s\t%s\t%s\t%s\n' "$(ts)" "$full" "$ref" "$sha" "${now:-DELETED}" \
-                >> "$LEDGER_DIR/pinned.tsv"
-            log "pinned orphaned tip: $full $ref $sha (was: ${now:-deleted})"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(ts)" "$name" "$full" "$ref" "$sha" "${now:-DELETED}" \
+                >> "$(src_ledger "$name")/pinned.tsv"
+            log "pinned orphaned tip: $name $full $ref $sha (was: ${now:-deleted})"
         else
-            log "could not pin: $full $ref $sha"
+            log "could not pin: $name $full $ref $sha"
         fi
-    done < "$TMP/before.txt"
+    done < "$TMP/before.refs"
 
-    # Track the upstream default branch, or a clone of the mirror checks out
-    # nothing and fsck complains that HEAD is unborn.
-    if [ -n "${default_branch:-}" ] \
-        && git -C "$dir" rev-parse --verify -q "refs/heads/$default_branch" > /dev/null; then
-        git -C "$dir" symbolic-ref HEAD "refs/heads/$default_branch"
-    fi
-
-    # Skip empty mirrors: fsck on a repo with no refs only emits a notice.
     if [ -n "$(git -C "$dir" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]; then
         if ! git -C "$dir" fsck --connectivity-only --no-progress --no-dangling > "$TMP/fsck.out" 2>&1; then
-            log "fsck reported problems: $full"
+            log "fsck reported problems: $name $full"
         fi
         if [ -s "$TMP/fsck.out" ]; then
-            printf '%s %s\n' "$(ts)" "$full" >> "$LOG_DIR/fsck.log"
+            printf '%s %s %s\n' "$(ts)" "$name" "$full" >> "$LOG_DIR/fsck.log"
             sed 's/^/    /' "$TMP/fsck.out" >> "$LOG_DIR/fsck.log"
         fi
     fi
 
-    ok=$((ok + 1))
-done < "$TMP/repos.tsv"
+    [ "$lost" -eq 1 ] && return 2
+    return 0
+}
 
-log "run finished: $ok ok, $failed failed, $(wc -l < "$TMP/repos.tsv") repos visible"
+retire_repo() { # name, owner/repo, reason
+    local name=$1 full=$2 reason=$3 f
+    f="$(src_state "$name")/retired.tsv"
+    touch "$f"
+    if ! grep -qxF "$full" "$f" 2>/dev/null; then
+        printf '%s\t%s\t%s\n' "$(ts)" "$full" "$reason" >> "$f"
+        printf '%s\t%s\n' "$(ts)" "$full" >> "$(src_ledger "$name")/vanished.tsv"
+        log "retired: $name $full ($reason); mirror kept at $(mirror_path "$name" "$full")"
+    fi
+}
 
-if [ "$failed" -eq 0 ]; then
+# ------------------------------------------------------------------ source --
+
+backup_source() {
+    local name=$1
+    local state ledger
+    ensure_source_dirs "$name"
+    state="$(src_state "$name")"
+
+    local disc="$TMP/$name.discovery"
+    : > "$disc"
+    local attempted=0 discovered=0
+
+    if [ "${SRC_DISCOVER[$name]:-0}" = "1" ]; then
+        attempted=1
+        local t
+        if [ "${SRC_KIND[$name]}" = "account" ]; then
+            for t in $(source_token_list "$name"); do
+                if _discover_account "$t" > "$disc"; then discovered=1; break; fi
+            done
+        else
+            t=$(source_token_list "$name" | awk '{print $1}')
+            if _discover_owner "$t" "$name" > "$disc"; then discovered=1; fi
+        fi
+    else
+        discovered=1   # explicit repo list, nothing to discover
+    fi
+
+    # Explicit repos always belong to the source, discovered or not.
+    local r
+    for r in ${SRC_REPOS[$name]:-}; do
+        printf '%s\t\n' "$r" >> "$disc"
+    done
+
+    if [ "$attempted" -eq 1 ] && [ "$discovered" -eq 0 ]; then
+        printf 'unreachable\n' > "$state/state"
+        warn "$name: discovery failed, falling back to the known repo list"
+    else
+        printf 'ok\n' > "$state/state"
+    fi
+
+    # Remember what we already had, for loss detection inside the loop.
+    : > "$TMP/prev.known"
+    [ -f "$state/repos.known" ] && cp -f "$state/repos.known" "$TMP/prev.known"
+
+    # Union with everything we already knew: nothing leaves the archive because
+    # it stopped being visible.
+    if [ -s "$state/repos.tsv" ]; then
+        cut -f1 "$state/repos.tsv" | while read -r r; do
+            [ -n "$r" ] && printf '%s\t\n' "$r"
+        done >> "$disc"
+    fi
+
+    if [ ! -s "$disc" ]; then
+        log "$name: nothing known and no discovery; skipping"
+        return 1
+    fi
+
+    awk -F'\t' 'NF { if ($2 != "") db[$1] = $2; else if (!($1 in db)) db[$1] = "" }
+        END { for (r in db) print r "\t" db[r] }' "$disc" | sort > "$TMP/$name.final"
+
+    cut -f1 "$TMP/$name.final" > "$state/repos.known"
+
+    local total=0 ok=0 failed=0 skipped=0 full db
+    while IFS=$'\t' read -r full db; do
+        [ -n "$full" ] || continue
+        total=$((total + 1))
+
+        if grep -qxF "$full" "$state/retired.tsv" 2>/dev/null; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [ -n "${SEEN[$full]:-}" ]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        SEEN[$full]=$name
+
+        if mirror_repo "$name" "$full" "$db"; then
+            ok=$((ok + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done < "$TMP/$name.final"
+
+    cp -f "$TMP/$name.final" "$state/repos.tsv"
+
+    # Integrity: anything we believe we hold that is not on disk, and that was
+    # not rebuilt above (retired repos are skipped), is an incident.
+    local missing=0
+    while read -r full; do
+        [ -n "$full" ] || continue
+        if [ ! -d "$(mirror_path "$name" "$full")" ]; then
+            log "CRITICAL mirror missing from disk: $name $full"
+            missing=$((missing + 1))
+        fi
+    done < "$state/repos.known"
+
+    log "$name: $ok ok, $failed failed, $skipped skipped, $total known, $missing missing"
+
+    if [ "$failed" -eq 0 ] && [ "$missing" -eq 0 ]; then
+        date -u +%s > "$state/last-backup-ok"
+        return 0
+    fi
+    return 1
+}
+
+# ------------------------------------------------------------------- drive --
+
+overall=0
+sources_ok=0
+for name in "${SOURCE_NAMES[@]}"; do
+    if backup_source "$name"; then
+        sources_ok=$((sources_ok + 1))
+    else
+        overall=1
+    fi
+done
+
+log "run finished: $sources_ok/${#SOURCE_NAMES[@]} sources clean, $LOST mirror(s) rebuilt from scratch"
+
+if [ "$overall" -eq 0 ]; then
     date -u +%s > "$STATUS_DIR/last-backup-ok"
 else
     exit 1

@@ -11,21 +11,15 @@ RUN apk add --no-cache \
  && git lfs install --system --skip-repo
 
 COPY bin/ /usr/local/bin/
-RUN chmod 0755 \
-        /usr/local/bin/common.sh \
-        /usr/local/bin/cred-helper \
-        /usr/local/bin/backup.sh \
-        /usr/local/bin/ledger.sh \
-        /usr/local/bin/bundle.sh \
-        /usr/local/bin/restore.sh \
-        /usr/local/bin/healthcheck.sh \
-        /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/*.sh /usr/local/bin/cred-helper
 
 ENV HOME=/tmp \
     ROOT=/data \
+    CONFIG_FILE=/config/config.json \
     BACKUP_INTERVAL=3600 \
     LEDGER_INTERVAL=900 \
-    BUNDLE_INTERVAL=2592000
+    BUNDLE_INTERVAL=2592000 \
+    BUNDLE_KEEP=6
 
 VOLUME ["/data"]
 

@@ -1,0 +1,27 @@
+{
+  "defaults": {
+    "branches": "all"
+  },
+
+  "accounts": [
+    {
+      "token": "github_pat_PERSONAL_ACCOUNT",
+      "branches": "all"
+    },
+    {
+      "token": "github_pat_WORK_ACCOUNT",
+      "branches": "default"
+    }
+  ],
+
+  "public": [
+    {
+      "repo": "ShadyHippo/PinBench",
+      "branches": "all"
+    },
+    {
+      "owner": "artcraft",
+      "branches": "main,release/*"
+    }
+  ]
+}

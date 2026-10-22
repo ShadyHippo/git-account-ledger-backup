@@ -20,12 +20,14 @@ case "$mode" in
         wait
         ;;
 
-    backup|ledger|bundle|healthcheck)
+    backup|ledger|bundle|healthcheck|stats)
         exec "$SELF_DIR/$mode.sh"
         ;;
 
     *)
-        echo "usage: entrypoint.sh [loop|backup|ledger|bundle|healthcheck]" >&2
+        echo "usage: entrypoint.sh [loop|backup|ledger|bundle|healthcheck|stats]" >&2
+        echo "       for destructive maintenance use snapshot.sh directly:" >&2
+        echo "       docker exec gitarchive /usr/local/bin/snapshot.sh --help" >&2
         exit 2
         ;;
 esac

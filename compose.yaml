@@ -7,22 +7,31 @@ services:
     environment:
       TZ: America/New_York
 
-      # --- EDIT THIS ONE LINE -------------------------------------------------
-      # Fine-grained PAT, "All repositories", Contents: Read-only.
-      GITHUB_RO_TOKEN: "PASTE_YOUR_READ_ONLY_PAT_HERE"
-      # -----------------------------------------------------------------------
+      # --- EDIT THESE -------------------------------------------------------
+      # One or more read-only PATs. Each token's account gets its own
+      # directory under /data/sources/<login>/.
+      GITHUB_RO_TOKENS: "PASTE_READ_ONLY_PAT_HERE"
 
-      # Scheduling, in seconds.
+      # Third-party repos or accounts you want archived. Optional.
+      # A specific repo, or a whole owner, comma separated:
+      # PUBLIC_REPOS: "someuser/SomethingInteresting"
+      # PUBLIC_ACCOUNTS: "artcraft"
+
+      # all | default | a comma separated list with globs, e.g. "main,release/*"
+      BRANCH_POLICY: "all"
+      # ---------------------------------------------------------------------
+
       BACKUP_INTERVAL: "3600"        # mirror every hour
       LEDGER_INTERVAL: "900"         # push-event ledger every 15 min
       BUNDLE_INTERVAL: "2592000"     # bundle + repack every 30 days
+      BUNDLE_KEEP: "6"               # bundle generations to retain
 
     volumes:
       # Point this at a share on the array (Use cache: no).
       - /mnt/user/gitarchive:/data
-      # Prefer a mounted file over the inline token above? Comment out
-      # GITHUB_RO_TOKEN above, uncomment this, and set GITHUB_RO_TOKEN_FILE.
-      # - /mnt/user/appdata/gitarchive/github_ro:/run/secrets/github_ro:ro
+      # Optional per-source policies (see config.example.json). Mounted
+      # read-only; tokens may live here instead of in the environment.
+      # - /mnt/user/appdata/gitarchive/config.json:/config/config.json:ro
 
     read_only: true
     tmpfs:
