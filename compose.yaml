@@ -21,13 +21,23 @@ services:
       BRANCH_POLICY: "all"
       # ---------------------------------------------------------------------
 
-      BACKUP_INTERVAL: "3600"        # mirror every hour
-      # 0 disables the push-event ledger entirely. It is an audit/undo
-      # convenience; pinning and verification do not depend on it.
+      # One full pass per night: backup, ledger, bundle (only if due), verify.
+      # Set SCHEDULE_AT to "" to switch to the interval knobs below instead.
+      SCHEDULE_AT: "03:15"
+      RUN_ON_STARTUP: "1"
+
+      # 0 disables the push-event ledger. It is an audit/undo convenience;
+      # pinning and verification do not depend on it.
       LEDGER_INTERVAL: "900"
-      BUNDLE_INTERVAL: "2592000"     # bundle + repack every 30 days
-      BUNDLE_KEEP: "6"               # bundle generations to retain
-      VERIFY_INTERVAL: "604800"      # offline integrity proof weekly
+
+      # Bundles do not run nightly regardless of schedule: they do not
+      # deduplicate, so one generation per month is the default.
+      BUNDLE_INTERVAL: "2592000"
+      BUNDLE_KEEP: "6"
+
+      # Interval-mode only. Ignored while SCHEDULE_AT is set.
+      BACKUP_INTERVAL: "3600"
+      VERIFY_INTERVAL: "604800"
 
     volumes:
       # Point this at a share on the array (Use cache: no).

@@ -5,7 +5,11 @@
 set -Eeuo pipefail
 
 : "${ROOT:=/data}"
-max=$(( ${BACKUP_INTERVAL:-3600} * 3 ))
+if [ -n "${SCHEDULE_AT:-}" ]; then
+    max=$(( 3 * 86400 ))          # a daily schedule may miss one night, not three
+else
+    max=$(( ${BACKUP_INTERVAL:-3600} * 3 ))
+fi
 now=$(date -u +%s)
 checked=0
 stale=0
@@ -42,7 +46,11 @@ fi
 # Verification is what proves the local copy is restorable. If it has stopped
 # running, the archive is unproven, which is worth reporting.
 vmark="$ROOT/verify/last-ok"
-vmax=$(( ${VERIFY_INTERVAL:-604800} * 3 ))
+if [ -n "${SCHEDULE_AT:-}" ]; then
+    vmax=$(( 3 * 86400 ))
+else
+    vmax=$(( ${VERIFY_INTERVAL:-604800} * 3 ))
+fi
 if [ -f "$vmark" ]; then
     vepoch=$(tr -dc '0-9' < "$vmark" || echo 0)
     vage=$((now - ${vepoch:-0}))

@@ -219,6 +219,17 @@ names=$(ROOT="$tmp/envonly" GITHUB_RO_TOKENS='["tok-alpha","tok-beta"]' CONFIG_F
     bash -c ". '$here/bin/common.sh'; . '$here/bin/config.sh'; load_config; printf '%s\n' \"\${SOURCE_NAMES[@]}\"" 2>/dev/null | sort | tr '\n' ' ')
 check "env token array resolves both accounts" "[ '$names' = 'alpha beta ' ]"
 
+echo "== nightly scheduler arithmetic"
+sched() { bash -c ". '$here/bin/schedule.sh'; $1"; }
+for t in 00:00 03:15 12:00 23:59; do
+    d=$(sched "seconds_until $t")
+    check "seconds_until $t is within a day" "[ '$d' -gt 0 ] && [ '$d' -le 86400 ]"
+done
+check "SCHEDULE_AT rejects 24:00"   "! sched 'valid_hhmm 24:00'"
+check "SCHEDULE_AT rejects 3:15"    "! sched 'valid_hhmm 3:15'"
+check "SCHEDULE_AT accepts 03:15"   "sched 'valid_hhmm 03:15'"
+check "nanosecond-free HH:MM math"  "[ \"\$(sched 'seconds_until 00:00')\" -le 86400 ]"
+
 echo "== a mirror deleted out from under us is reported"
 rm -rf "$X"
 out=$("$here/bin/backup.sh" 2>&1) && rc=0 || rc=$?

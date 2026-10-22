@@ -259,7 +259,7 @@ All eleven commits survive the gc, and `show <sha>:f` returns the original
 content for each. Reconstructed states at four different timestamps match what
 the branch pointed at then.
 
-That is 127 checks across both suites:$
+That is 135 checks across both suites:
 
 ```bash
 make test
@@ -305,8 +305,8 @@ somewhere outside the NAS once in a while. If you ever need to answer "is what I
 have now the same thing I had on the 3rd", the digest settles it without
 reading a single file back.
 
-It runs weekly by default (`VERIFY_INTERVAL`) and the container healthcheck goes
-unhealthy if verification stops happening, because an unverified archive is an
+It runs on every nightly pass, and the container healthcheck goes unhealthy
+if verification stops happening, because an unverified archive is an
 unproven one.
 
 ### What this does and does not prove
@@ -373,6 +373,63 @@ The **write** token for restores lives in your password manager and is passed
 with `docker exec -e` when needed. That asymmetry is the security model: the
 server can read, only you can rewrite.
 
+## Scheduling and bandwidth
+
+The default is one full pass per night at 03:15 local time (`TZ`):
+
+```yaml
+SCHEDULE_AT: "03:15"
+RUN_ON_STARTUP: "1"     # also run once when the container starts
+```
+
+A pass runs, in order: **backup → ledger → bundle → verify**. Bundles are
+invoked every night but only do work when `BUNDLE_INTERVAL` has elapsed, because
+a bundle is a full standalone copy of the repo and does not deduplicate. Running
+them nightly would multiply your storage by thirty.
+
+Bundles are the one thing you should *not* put on the nightly schedule.
+
+### Cost of a pass
+
+Bandwidth is proportional to what changed upstream, not to how often you look.
+An unchanged repository costs one ref advertisement — the client compares and
+disconnects:
+
+| Component | Cost |
+|---|---|
+| Refs for an unchanged repo | ~50 bytes per ref, so 2–10 KB typically |
+| 100 unchanged repos | ~0.5 MB per pass |
+| A day of ordinary commits | 20–200 KB per active repo |
+| A big binary push | whatever the binary is |
+
+Polling hourly instead of nightly is 12 MB/day instead of 0.5 MB/day, which is
+nothing. The two things that actually scale with frequency are not bytes:
+
+- **API requests.** The ledger is one call per repo per poll. 100 repos at 15
+  minutes is 9,600 requests/day; nightly is 100.
+- **Tag-heavy and LFS repos.** Ref advertisement grows with ref count, so a
+  repo with thousands of tags pays ~300 KB *per fetch* whether or not anything
+  changed, and `git lfs fetch --all` re-lists objects every run.
+
+What nightly actually costs is **granularity**: an intermediate state created
+*and* abandoned between two runs may never be fetched. That does not affect
+rolling back to a good state — the state that was current at the previous run
+gets pinned when the next one sees the damage. It only means `restore.sh rescue`
+becomes a tool you might actually use.
+
+### Other modes
+
+```yaml
+SCHEDULE_AT: ""          # fall back to the interval knobs below
+```
+
+```bash
+docker exec gitarchive /usr/local/bin/entrypoint.sh verify    # one job
+docker exec -e ONE_PASS=1 gitarchive /usr/local/bin/entrypoint.sh loop
+```
+
+or hand it to Unraid's User Scripts / cron and keep the container idle.
+
 ## Knobs
 
 | Variable | Default | Meaning |
@@ -381,15 +438,14 @@ server can read, only you can rewrite.
 | `PUBLIC_REPOS` | — | `owner/repo` list to archive |
 | `PUBLIC_ACCOUNTS` | — | owners to enumerate publicly |
 | `BRANCH_POLICY` | `all` | `all`, `default`, or `main,release/*` |
-| `BACKUP_INTERVAL` | `3600` | seconds between mirror runs |
-| `LEDGER_INTERVAL` | `900` | seconds between event polls; `0` disables the ledger |
+| `SCHEDULE_AT` | `03:15` | nightly wall-clock time; empty enables interval mode |
+| `RUN_ON_STARTUP` | `1` | run a full pass when the container starts |
+| `LEDGER_INTERVAL` | `900` | event poll seconds; `0` disables the ledger |
 | `BUNDLE_INTERVAL` | `2592000` | seconds between bundle + repack |
 | `BUNDLE_KEEP` | `6` | bundle generations retained |
-| `VERIFY_INTERVAL` | `604800` | seconds between offline integrity proofs |
+| `BACKUP_INTERVAL` | `3600` | interval mode only |
+| `VERIFY_INTERVAL` | `604800` | interval mode only |
 | `CONFIG_FILE` | `/config/config.json` | optional per-source policies |
-
-100 repos at a 15-minute ledger poll is ~400 API calls/hour against a
-5,000/hour limit.
 
 ## Limitations
 
@@ -416,7 +472,7 @@ server can read, only you can rewrite.
 ## Development
 
 ```bash
-make test     # 127 checks, no network, no Docker (unit + adversarial)
+make test     # 135 checks, no network, no Docker (unit + adversarial)
 make build
 ```
 

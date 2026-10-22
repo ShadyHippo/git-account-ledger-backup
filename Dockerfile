@@ -16,11 +16,13 @@ RUN chmod 0755 /usr/local/bin/*.sh /usr/local/bin/cred-helper
 ENV HOME=/tmp \
     ROOT=/data \
     CONFIG_FILE=/config/config.json \
+    SCHEDULE_AT=03:15 \
+    RUN_ON_STARTUP=1 \
     BACKUP_INTERVAL=3600 \
     LEDGER_INTERVAL=900 \
     BUNDLE_INTERVAL=2592000 \
     BUNDLE_KEEP=6 \
-    VERIFY_INTERVAL=604800
+    VERIFY_INTERVAL=86400
 
 VOLUME ["/data"]
 
