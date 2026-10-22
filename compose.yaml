@@ -1,0 +1,34 @@
+services:
+  gitarchive:
+    image: ghcr.io/shadyhippo/git-account-ledger-backup:latest
+    container_name: gitarchive
+    restart: unless-stopped
+
+    environment:
+      TZ: America/New_York
+
+      # --- EDIT THIS ONE LINE -------------------------------------------------
+      # Fine-grained PAT, "All repositories", Contents: Read-only.
+      GITHUB_RO_TOKEN: "PASTE_YOUR_READ_ONLY_PAT_HERE"
+      # -----------------------------------------------------------------------
+
+      # Scheduling, in seconds.
+      BACKUP_INTERVAL: "3600"        # mirror every hour
+      LEDGER_INTERVAL: "900"         # push-event ledger every 15 min
+      BUNDLE_INTERVAL: "2592000"     # bundle + repack every 30 days
+
+    volumes:
+      # Point this at a share on the array (Use cache: no).
+      - /mnt/user/gitarchive:/data
+      # Prefer a mounted file over the inline token above? Comment out
+      # GITHUB_RO_TOKEN above, uncomment this, and set GITHUB_RO_TOKEN_FILE.
+      # - /mnt/user/appdata/gitarchive/github_ro:/run/secrets/github_ro:ro
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+
+    # No ports. Outbound HTTPS only.

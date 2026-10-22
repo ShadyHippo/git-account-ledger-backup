@@ -1,0 +1,11 @@
+#!/bin/sh
+# git credential helper. Keeps the token out of .git/config and out of URLs,
+# and is honoured by both git and git-lfs.
+case "${1:-}" in
+    get) ;;
+    *) exit 0 ;;   # store/erase: nothing to do, we never persist anything
+esac
+
+[ -n "${GITHUB_RO_TOKEN:-}" ] || exit 1
+echo "username=x-access-token"
+echo "password=${GITHUB_RO_TOKEN}"

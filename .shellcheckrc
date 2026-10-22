@@ -1,0 +1,3 @@
+# LOG_TAG/LOG_FILE/BUNDLE_DIR are consumed by functions in bin/common.sh,
+# which shellcheck cannot resolve through a dynamic source path.
+disable=SC2034

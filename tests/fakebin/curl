@@ -1,0 +1,31 @@
+#!/bin/sh
+# Stand-in for curl so the test suite can drive the real scripts without
+# touching the network. Returns canned JSON based on the requested URL.
+url=""
+for a in "$@"; do
+    case "$a" in
+        http*) url=$a ;;
+    esac
+done
+
+if [ "${FAKE_API_FAIL:-0}" = "1" ]; then
+    echo "curl: (22) simulated API failure" >&2
+    exit 22
+fi
+
+case "$url" in
+    */user/repos*)
+        cat "${FAKE_REPOS_JSON:?FAKE_REPOS_JSON not set}"
+        ;;
+    */events*)
+        if [ -n "${FAKE_EVENTS_JSON:-}" ] && [ -r "$FAKE_EVENTS_JSON" ]; then
+            cat "$FAKE_EVENTS_JSON"
+        else
+            printf '[]\n'
+        fi
+        ;;
+    *)
+        echo "fake curl: unexpected url: $url" >&2
+        exit 22
+        ;;
+esac

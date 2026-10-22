@@ -1,0 +1,3 @@
+# Local compose override, likely to contain a real token.
+compose.local.yaml
+.env
