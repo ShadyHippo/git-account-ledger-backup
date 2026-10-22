@@ -252,6 +252,10 @@ server can read, only you can rewrite.
 - **Issues, PRs, release assets and wikis are not in git.** Code and history
   only. Run `josegonzalez/python-github-backup` alongside for the API side.
 - Submodule contents are not fetched, only the pointer commits.
+- **Bundles do not contain LFS objects.** `git bundle` only carries git
+  objects, so for an LFS repo the monthly bundle is history-only; the LFS
+  objects exist solely in `mirrors/<owner>/<repo>.git/lfs`. If you rely on LFS
+  and need the off-array copy to be complete, handle that directory separately.
 - A commit pushed and force-pushed away inside one interval is never fetched.
   The ledger records the SHA, actor and time, but the objects do not exist
   locally. Shorten `BACKUP_INTERVAL` to narrow this.
