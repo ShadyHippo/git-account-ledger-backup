@@ -143,7 +143,7 @@ Scale the intervals to your account. 100 repos at a 15-minute ledger poll is
 ## Development
 
 ```bash
-make test     # 37 checks, no network, no Docker
+make test     # 41 checks, no network, no Docker
 make build
 ```
 
