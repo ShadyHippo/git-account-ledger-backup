@@ -14,18 +14,23 @@ case "$mode" in
         trap 'log "shutting down"; kill 0' TERM INT
 
         ( while :; do "$SELF_DIR/backup.sh" || true; sleep "${BACKUP_INTERVAL:-3600}"; done ) &
-        ( sleep 30; while :; do "$SELF_DIR/ledger.sh" || true; sleep "${LEDGER_INTERVAL:-900}"; done ) &
+        if [ "${LEDGER_INTERVAL:-900}" -gt 0 ]; then
+            ( sleep 30; while :; do "$SELF_DIR/ledger.sh" || true; sleep "$LEDGER_INTERVAL"; done ) &
+        else
+            log "ledger disabled (LEDGER_INTERVAL=0); pinning and verification are unaffected"
+        fi
         ( sleep 60; while :; do "$SELF_DIR/bundle.sh" || true; sleep 300; done ) &
+        ( sleep 120; while :; do "$SELF_DIR/verify.sh" || true; sleep "${VERIFY_INTERVAL:-604800}"; done ) &
 
         wait
         ;;
 
-    backup|ledger|bundle|healthcheck|stats)
+    backup|ledger|bundle|healthcheck|stats|verify)
         exec "$SELF_DIR/$mode.sh"
         ;;
 
     *)
-        echo "usage: entrypoint.sh [loop|backup|ledger|bundle|healthcheck|stats]" >&2
+        echo "usage: entrypoint.sh [loop|backup|ledger|bundle|healthcheck|stats|verify]" >&2
         echo "       for destructive maintenance use snapshot.sh directly:" >&2
         echo "       docker exec gitarchive /usr/local/bin/snapshot.sh --help" >&2
         exit 2

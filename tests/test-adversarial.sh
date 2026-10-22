@@ -194,6 +194,23 @@ check "state materializes a worktree" "\"$here/bin/restore.sh\" state agent/targ
 check "materialized branch is F"  "[ \"\$(git -C '$tmp/past' rev-parse main)\" = '$F' ]"
 check "materialized file is F"    "[ \"\$(cat '$tmp/past/f')\" = F ]"
 
+echo "== offline integrity proof, no network"
+check "verify passes"             "\"$here/bin/verify.sh\""
+check "verify wrote an attestation" "[ -s '$ROOT/verify/last-ok' ]"
+check "verify recorded a digest"  "tail -1 '$ROOT/verify/history.tsv' | grep -q 'sha256:'"
+check "full verification passes"  "\"$here/bin/verify.sh\" --full --drill 5"
+check "digest is stable across runs" \
+    "[ \"\$(tail -1 '$ROOT/verify/history.tsv' | cut -f6)\" = \"\$(tail -2 '$ROOT/verify/history.tsv' | head -1 | cut -f6)\" ]"
+
+echo "== verify catches a promise that was silently lost"
+# fsck alone cannot see this: the object is unreferenced and simply gone.
+git -C "$M" update-ref -d "refs/archive/$G"
+git -C "$M" gc --prune=now -q
+check "fsck still says the repo is fine" "git -C '$M' fsck --connectivity-only --no-progress"
+out=$("$here/bin/verify.sh" 2>&1) && rc=0 || rc=$?
+check "verify fails"              "[ '$rc' -ne 0 ]"
+check "verify names the lost commit" "printf '%s' \"\$out\" | grep -q '$G'"
+
 echo
 if [ "$fail" -eq 0 ]; then
     printf '\033[32m%s checks passed\033[0m\n' "$pass"

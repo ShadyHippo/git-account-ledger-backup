@@ -22,9 +22,12 @@ services:
       # ---------------------------------------------------------------------
 
       BACKUP_INTERVAL: "3600"        # mirror every hour
-      LEDGER_INTERVAL: "900"         # push-event ledger every 15 min
+      # 0 disables the push-event ledger entirely. It is an audit/undo
+      # convenience; pinning and verification do not depend on it.
+      LEDGER_INTERVAL: "900"
       BUNDLE_INTERVAL: "2592000"     # bundle + repack every 30 days
       BUNDLE_KEEP: "6"               # bundle generations to retain
+      VERIFY_INTERVAL: "604800"      # offline integrity proof weekly
 
     volumes:
       # Point this at a share on the array (Use cache: no).

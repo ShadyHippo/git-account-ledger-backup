@@ -38,6 +38,20 @@ if [ "$checked" -eq 0 ]; then
     echo "no reachable sources"
     exit 1
 fi
+
+# Verification is what proves the local copy is restorable. If it has stopped
+# running, the archive is unproven, which is worth reporting.
+vmark="$ROOT/verify/last-ok"
+vmax=$(( ${VERIFY_INTERVAL:-604800} * 3 ))
+if [ -f "$vmark" ]; then
+    vepoch=$(tr -dc '0-9' < "$vmark" || echo 0)
+    vage=$((now - ${vepoch:-0}))
+    if [ "$vage" -gt "$vmax" ]; then
+        echo "verify: last successful integrity check ${vage}s ago (limit ${vmax}s)"
+        stale=$((stale + 1))
+    fi
+fi
+
 if [ "$stale" -gt 0 ]; then
     echo "$stale/$checked sources stale"
     exit 1

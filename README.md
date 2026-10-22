@@ -259,11 +259,85 @@ All eleven commits survive the gc, and `show <sha>:f` returns the original
 content for each. Reconstructed states at four different timestamps match what
 the branch pointed at then.
 
-That is 119 checks across both suites:
+That is 127 checks across both suites:$
 
 ```bash
 make test
 ```
+
+## Proving the copy on your machine is restorable
+
+Nothing above matters if the bytes on disk are quietly wrong. `verify.sh` is a
+fully offline check — it never contacts GitHub, so what it reports is a
+statement about your machine and nothing else:
+
+```bash
+docker exec gitarchive /usr/local/bin/verify.sh
+```
+
+```
+SOURCE            REPOS   REFS   PINS       SIZE
+alpha                12    310     27    1.2 GiB
+artcraft              3     44      0    4.8 GiB
+
+repos      15
+refs       354
+pinned     27
+size       6.0 GiB
+digest     sha256:9f2c...
+```
+
+It checks four things:
+
+1. every mirror directory still exists
+2. `git fsck` finds no missing or broken objects
+3. **every commit ever recorded in `pinned.tsv` still resolves** — this is the
+   actual promise the archive makes, and fsck cannot check it, because a
+   silently deleted unreferenced object leaves a repo that looks perfectly fine
+4. a sample of pinned commits can be materialised, blobs and all, so it tests
+   restorability rather than mere presence
+
+`--full` validates every object rather than just connectivity, for catching bit
+rot. `--drill N` changes the sample size.
+
+The **digest** is a sha256 over every repo's `ref → sha` set. Record it
+somewhere outside the NAS once in a while. If you ever need to answer "is what I
+have now the same thing I had on the 3rd", the digest settles it without
+reading a single file back.
+
+It runs weekly by default (`VERIFY_INTERVAL`) and the container healthcheck goes
+unhealthy if verification stops happening, because an unverified archive is an
+unproven one.
+
+### What this does and does not prove
+
+It proves the archive is **logically** intact: nothing you were promised is
+missing, and everything present is readable. It cannot protect against the disk
+dying — that is what parity and the off-array bundle copy are for. "Unbreakable"
+here means *if the bytes are there, they are restorable, and you can prove it*.
+
+## What missing pushes mean
+
+They mean you do not have those particular states. Nothing else.
+
+- They do **not** corrupt anything. Each fetched commit is self-contained with
+  its full tree and ancestry.
+- They do **not** break "rolling forward". Fetching is stateless: the next run
+  negotiates fresh with the server, and having less local history only changes
+  how much it transfers.
+- They do **not** chain into later losses. The pinned tips keep everything that
+  was ever a branch tip at a fetch boundary, and pins are never removed.
+
+If the final state descends from a state you missed, you usually have it anyway.
+Only an *unrelated* rewrite that is never fetched is genuinely absent, and
+`restore.sh rescue` can still pull it while upstream retains the object.
+
+This is also why the push-event ledger is optional. It is an audit trail and a
+convenience for answering "what happened at 14:32". The safety mechanism is
+pinning plus verification. Set `LEDGER_INTERVAL: "0"` to turn it off entirely
+without weakening the archive.
+
+
 
 ## Off-array copy
 
@@ -308,9 +382,10 @@ server can read, only you can rewrite.
 | `PUBLIC_ACCOUNTS` | — | owners to enumerate publicly |
 | `BRANCH_POLICY` | `all` | `all`, `default`, or `main,release/*` |
 | `BACKUP_INTERVAL` | `3600` | seconds between mirror runs |
-| `LEDGER_INTERVAL` | `900` | seconds between event polls |
+| `LEDGER_INTERVAL` | `900` | seconds between event polls; `0` disables the ledger |
 | `BUNDLE_INTERVAL` | `2592000` | seconds between bundle + repack |
 | `BUNDLE_KEEP` | `6` | bundle generations retained |
+| `VERIFY_INTERVAL` | `604800` | seconds between offline integrity proofs |
 | `CONFIG_FILE` | `/config/config.json` | optional per-source policies |
 
 100 repos at a 15-minute ledger poll is ~400 API calls/hour against a
@@ -341,7 +416,7 @@ server can read, only you can rewrite.
 ## Development
 
 ```bash
-make test     # 119 checks, no network, no Docker (unit + adversarial)
+make test     # 127 checks, no network, no Docker (unit + adversarial)
 make build
 ```
 
