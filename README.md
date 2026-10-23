@@ -259,7 +259,7 @@ All eleven commits survive the gc, and `show <sha>:f` returns the original
 content for each. Reconstructed states at four different timestamps match what
 the branch pointed at then.
 
-That is 135 checks across both suites:
+That is 144 checks across both suites:$
 
 ```bash
 make test
@@ -337,6 +337,56 @@ convenience for answering "what happened at 14:32". The safety mechanism is
 pinning plus verification. Set `LEDGER_INTERVAL: "0"` to turn it off entirely
 without weakening the archive.
 
+
+
+## Knowing when it stops
+
+Silence is the only failure mode that is unbounded, and it looks identical to a
+healthy archive: a directory with plausible files in it. Three layers, because
+the failure shapes differ:
+
+1. **Docker healthcheck.** Reports `unhealthy` if a source is stale or
+   verification has not run. Only useful if you look at the container list.
+2. **Alert on a failed pass.** Fires the moment the 03:15 pass finishes with
+   problems, and says which stage.
+3. **External dead-man's switch.** The only layer that catches *the container
+   being gone*, because a dead container cannot report its own death. The pass
+   pings a URL on success; an outside service alerts when the ping stops
+   arriving.
+
+```yaml
+NTFY_URL: "https://ntfy.sh"
+NTFY_TOPIC: "gitarchive"
+
+# or a generic JSON webhook: POST {"title": "...", "text": "..."}
+ALERT_URL: "https://example.com/hook"
+
+# the one that matters most: healthchecks.io, Uptime Kuma push, anything
+HEARTBEAT_URL: "https://hc-ping.com/YOUR-UUID"
+```
+
+For the heartbeat, use a 1-day period with a 2–4 hour grace. That combination —
+ntfy for detail, heartbeat for silence — is complete coverage: 1 tells you what
+broke, 3 tells you when nothing is running at all.
+
+Without either, "unbounded staleness" is your real exposure, not the agents.
+
+## Inspecting it read-only
+
+Bind the share read-only into any other container:
+
+```yaml
+volumes:
+  - /mnt/user/gitarchive:/data:ro
+```
+
+`verify.sh` notices the mount is not writable and skips its attestation, so it
+still proves everything without writing. `stats.sh`, and `restore.sh list`,
+`events`, `pinned`, `state` and `clone`, all work read-only. Anything that
+writes — `rescue`, `push`, `snapshot` — correctly refuses.
+
+That is the intended way to ask "is `owner/repo` backed up, and how current is
+it?" from an agent or a shell that should have no ability to change the answer.
 
 
 ## Off-array copy
@@ -445,6 +495,9 @@ or hand it to Unraid's User Scripts / cron and keep the container idle.
 | `BUNDLE_KEEP` | `6` | bundle generations retained |
 | `BACKUP_INTERVAL` | `3600` | interval mode only |
 | `VERIFY_INTERVAL` | `604800` | interval mode only |
+| `NTFY_URL` / `NTFY_TOPIC` | — | push an alert on a failed pass |
+| `ALERT_URL` | — | generic JSON webhook on a failed pass |
+| `HEARTBEAT_URL` | — | pinged after a clean pass; external dead-man's switch |
 | `CONFIG_FILE` | `/config/config.json` | optional per-source policies |
 
 ## Limitations
@@ -472,7 +525,7 @@ or hand it to Unraid's User Scripts / cron and keep the container idle.
 ## Development
 
 ```bash
-make test     # 135 checks, no network, no Docker (unit + adversarial)
+make test     # 147 checks, no network, no Docker (unit + adversarial)
 make build
 ```
 

@@ -29,17 +29,35 @@ shutdown() {
 # One full pass: pin everything, record events, bundle if due, prove the result.
 # Sequential on purpose: verify must look at what backup just wrote.
 run_suite() {
+    local rc=0
+
     log "full pass: backup"
-    "$SELF_DIR/backup.sh" || log "backup reported problems"
+    "$SELF_DIR/backup.sh" || { rc=1; log "backup reported problems"; }
+
     if [ "${LEDGER_INTERVAL:-900}" -gt 0 ]; then
         log "full pass: ledger"
-        "$SELF_DIR/ledger.sh" || log "ledger reported problems"
+        "$SELF_DIR/ledger.sh" || { rc=1; log "ledger reported problems"; }
     fi
+
     log "full pass: bundle (self-gating on BUNDLE_INTERVAL)"
-    "$SELF_DIR/bundle.sh" || log "bundle reported problems"
+    "$SELF_DIR/bundle.sh" || { rc=1; log "bundle reported problems"; }
+
     log "full pass: verify"
-    "$SELF_DIR/verify.sh" || log "verify reported problems"
-    log "full pass: done"
+    "$SELF_DIR/verify.sh" || { rc=1; log "verify reported problems"; }
+
+    if [ "$rc" -eq 0 ]; then
+        log "full pass: done"
+        "$SELF_DIR/notify.sh" heartbeat ok || true
+    else
+        log "full pass: finished with problems"
+        "$SELF_DIR/notify.sh" alert \
+            "gitarchive: nightly pass failed" \
+            "One or more stages reported problems. See /data/log/ inside the container." \
+            high || true
+        "$SELF_DIR/notify.sh" heartbeat fail || true
+    fi
+
+    return "$rc"
 }
 
 # Sleep that can be interrupted by shutdown.
@@ -56,7 +74,7 @@ case "$mode" in
 
         if [ "${ONE_PASS:-0}" = "1" ]; then
             run_suite
-            exit 0
+            exit $?
         fi
 
         if [ -n "${SCHEDULE_AT:-}" ]; then

@@ -39,6 +39,17 @@ services:
       BACKUP_INTERVAL: "3600"
       VERIFY_INTERVAL: "604800"
 
+      # --- Notifications (optional; any one is enough) ----------------------
+      # Alerts when a pass fails, with detail:
+      # NTFY_URL: "https://ntfy.sh"
+      # NTFY_TOPIC: "gitarchive"
+      # ALERT_URL: "https://example.com/hook"     # POST {"title","text"}
+      #
+      # Pings after every CLEAN pass. This is the dead-man's switch: it is the
+      # only layer that notices the container being gone, because a dead
+      # container cannot send its own failure alert.
+      # HEARTBEAT_URL: "https://hc-ping.com/YOUR-UUID"
+
     volumes:
       # Point this at a share on the array (Use cache: no).
       - /mnt/user/gitarchive:/data

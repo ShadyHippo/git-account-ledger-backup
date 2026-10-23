@@ -230,6 +230,40 @@ check "SCHEDULE_AT rejects 3:15"    "! sched 'valid_hhmm 3:15'"
 check "SCHEDULE_AT accepts 03:15"   "sched 'valid_hhmm 03:15'"
 check "nanosecond-free HH:MM math"  "[ \"\$(sched 'seconds_until 00:00')\" -le 86400 ]"
 
+echo "== bundles survive an empty repo and a first run with nothing to prune"
+check "bundle run exits 0"          "BUNDLE_INTERVAL=0 \"$here/bin/bundle.sh\""
+check "no bundle for the empty repo" "[ ! -e \"\$(find '$ROOT/bundles/alpha' -name 'repo-two.bundle' 2>/dev/null | head -1)\" ]"
+check "bundle for the real repo"    "find '$ROOT/bundles/alpha' -name 'repo-one.bundle' | grep -q ."
+
+echo "== notification hooks"
+export FAKE_NOTIFY_LOG="$tmp/notify.log"
+: > "$FAKE_NOTIFY_LOG"
+NTFY_URL=https://ntfy.test NTFY_TOPIC=backups "$here/bin/notify.sh" alert "t" "b" || true
+check "ntfy alert sent"             "grep -q 'https://ntfy.test/backups' '$FAKE_NOTIFY_LOG'"
+ALERT_URL=https://hook.test/post "$here/bin/notify.sh" alert "t" "b" || true
+check "generic webhook sent"        "grep -q 'https://hook.test/post' '$FAKE_NOTIFY_LOG'"
+HEARTBEAT_URL=https://hc.test/ping/abc "$here/bin/notify.sh" heartbeat ok || true
+check "heartbeat ping sent"         "grep -q 'https://hc.test/ping/abc' '$FAKE_NOTIFY_LOG'"
+HEARTBEAT_URL=https://hc.test/ping/abc "$here/bin/notify.sh" heartbeat fail || true
+check "heartbeat fail sent"         "grep -q 'https://hc.test/ping/abc/fail' '$FAKE_NOTIFY_LOG'"
+: > "$FAKE_NOTIFY_LOG"
+"$here/bin/notify.sh" alert "t" "b" 2>/dev/null || true
+check "no-op without config"        "[ ! -s '$FAKE_NOTIFY_LOG' ]"
+
+echo "== a failing pass reports itself and exits non-zero"
+: > "$FAKE_NOTIFY_LOG"
+NTFY_URL=https://ntfy.test NTFY_TOPIC=backups ONE_PASS=1 ROOT="$tmp/empty-root" CONFIG_FILE=/nonexistent \
+    "$here/bin/entrypoint.sh" loop > /dev/null 2>&1 && rc=0 || rc=$?
+check "ONE_PASS propagates failure" "[ '$rc' -ne 0 ]"
+check "failure alert delivered"     "grep -q 'https://ntfy.test/backups' '$FAKE_NOTIFY_LOG'"
+
+echo "== verify works against a read-only archive"
+"$here/bin/verify.sh" > /dev/null 2>&1 || true
+before=$(wc -l < "$ROOT/verify/history.tsv" 2>/dev/null || echo 0)
+check "verify --no-write passes"    "\"$here/bin/verify.sh\" --no-write"
+after=$(wc -l < "$ROOT/verify/history.tsv" 2>/dev/null || echo 0)
+check "no attestation written"      "[ '$before' -eq '$after' ]"
+
 echo "== a mirror deleted out from under us is reported"
 rm -rf "$X"
 out=$("$here/bin/backup.sh" 2>&1) && rc=0 || rc=$?

@@ -20,16 +20,27 @@ SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 LOG_TAG=verify
 LOG_FILE="$LOG_DIR/verify.log"
 VERIFY_DIR="$ROOT/verify"
-ensure_dirs
-mkdir -p "$VERIFY_DIR"
+
+WRITE=1
+[ "${VERIFY_READONLY:-0}" = "1" ] && WRITE=0
+[ -w "$ROOT" ] || WRITE=0
+
+if [ "$WRITE" -eq 1 ]; then
+    ensure_dirs
+    mkdir -p "$VERIFY_DIR"
+else
+    # Read-only mount: prove what is there without writing an attestation.
+    LOG_FILE=""
+fi
 
 MODE=connectivity
 DRILL=3
 while [ $# -gt 0 ]; do
     case "$1" in
-        --full)     MODE=full; shift ;;
-        --no-drill) DRILL=0; shift ;;
-        --drill)    DRILL=${2:-3}; shift 2 ;;
+        --full)      MODE=full; shift ;;
+        --no-drill)  DRILL=0; shift ;;
+        --drill)     DRILL=${2:-3}; shift 2 ;;
+        --no-write)  WRITE=0; LOG_FILE=""; shift ;;
         -h|--help)
             cat <<'EOF'
 usage: verify.sh [options]
@@ -37,6 +48,7 @@ usage: verify.sh [options]
   --full       fsck every object, not just connectivity (slow, catches bit rot)
   --drill N    materialise N sampled pinned commits per repo (default 3)
   --no-drill   skip materialisation
+  --no-write   do not write the attestation (implied when /data is read-only)
 
 Exit status is 0 only if every check passes. No network access is used.
 EOF
@@ -107,11 +119,19 @@ for d in "$SOURCES_DIR"/*/; do
         nrefs=$(git -C "$dir" for-each-ref --format=x refs/heads refs/tags refs/archive | wc -l)
         s_refs=$((s_refs + nrefs))
 
-        # 3. every pin we ever promised must still resolve
+        # 3. every pin we ever promised must still resolve.
+        # A snapshot boundary deliberately voids earlier promises, so pins
+        # recorded before the most recent snapshot are no longer owed.
         pinlist="$TMP/pins"
         : > "$pinlist"
         if [ -f "$ledger/pinned.tsv" ]; then
-            awk -F'\t' -v r="$full" '$3 == r { print $5 }' "$ledger/pinned.tsv" > "$pinlist"
+            cutoff=""
+            if [ -f "$ledger/snapshots.tsv" ]; then
+                cutoff=$(awk -F'\t' -v r="$full" '$3 == r { print $1 }' "$ledger/snapshots.tsv" \
+                    | sort | tail -1)
+            fi
+            awk -F'\t' -v r="$full" -v c="$cutoff" \
+                '$3 == r && (c == "" || $1 >= c) { print $5 }' "$ledger/pinned.tsv" > "$pinlist"
         fi
         npins=$(wc -l < "$pinlist")
         s_pins=$((s_pins + npins))
@@ -166,8 +186,10 @@ printf 'pinned     %s\n' "$total_pins"
 printf 'size       %s\n' "$(human $((total_bytes * 1024)))"
 printf 'digest     sha256:%s\n' "$digest"
 
-printf '%s\t%s\t%s\t%s\t%s\tsha256:%s\n' \
-    "$when" "$total_repos" "$total_refs" "$total_pins" "$MODE" "$digest" >> "$VERIFY_DIR/history.tsv"
+if [ "$WRITE" -eq 1 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\tsha256:%s\n' \
+        "$when" "$total_repos" "$total_refs" "$total_pins" "$MODE" "$digest" >> "$VERIFY_DIR/history.tsv"
+fi
 
 if [ "$errors" -gt 0 ]; then
     printf '\n\033[31m%s problem(s) found\033[0m\n' "$errors"
@@ -175,7 +197,9 @@ if [ "$errors" -gt 0 ]; then
     exit 1
 fi
 
-date -u +%s > "$VERIFY_DIR/last-ok"
+if [ "$WRITE" -eq 1 ]; then
+    date -u +%s > "$VERIFY_DIR/last-ok"
+fi
 
 printf '\n\033[32mok\033[0m: every mirror, ref and pinned commit is present and readable\n'
 log "verify ok: $total_repos repos, $total_refs refs, $total_pins pinned, sha256:$digest"

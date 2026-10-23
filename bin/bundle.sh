@@ -69,13 +69,16 @@ for name in "${SOURCE_NAMES[@]}"; do
         count=$((count + 1))
     done < "$state/repos.tsv"
 
-    # Retention: newest BUNDLE_KEEP generations.
+    # Retention: newest BUNDLE_KEEP generations. Guard the glob so a first run
+    # with nothing to prune does not fail the job under pipefail.
     keep=${BUNDLE_KEEP:-6}
-    ls -1d "$(src_bundles "$name")"/[0-9][0-9][0-9][0-9]-[0-9][0-9] 2>/dev/null \
-        | sort -r | tail -n +$((keep + 1)) | while read -r old; do
-            log "$name: dropping old bundle generation $(basename "$old")"
-            rm -rf -- "$old"
-        done
+    if compgen -G "$(src_bundles "$name")/[0-9][0-9][0-9][0-9]-[0-9][0-9]" > /dev/null; then
+        ls -1d "$(src_bundles "$name")"/[0-9][0-9][0-9][0-9]-[0-9][0-9] 2>/dev/null \
+            | sort -r | tail -n +$((keep + 1)) | while read -r old; do
+                log "$name: dropping old bundle generation $(basename "$old")"
+                rm -rf -- "$old"
+            done
+    fi
 done
 
 log "bundled $count repos ($failed failed)"

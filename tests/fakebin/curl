@@ -18,6 +18,19 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# Anything that is not the GitHub API is an outbound notification. Record it and
+# pretend it succeeded, so the notification layer is testable offline.
+case "$url" in
+    *api.github.com*) ;;
+    *)
+        if [ -n "${url:-}" ]; then
+            [ -n "${FAKE_NOTIFY_LOG:-}" ] && printf '%s\n' "$url" >> "$FAKE_NOTIFY_LOG"
+            printf '{}\n'
+            exit 0
+        fi
+        ;;
+esac
+
 if [ "${FAKE_API_FAIL:-0}" = "1" ]; then
     echo "curl: (22) simulated API failure" >&2
     exit 22
