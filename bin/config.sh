@@ -111,7 +111,6 @@ _collect_tokens() { # prints "token<TAB>policy"
     local default_policy=${BRANCH_POLICY:-}
     if [ -z "$default_policy" ]; then
         default_policy=$(_cfg '.defaults.branches // empty' | head -1)
-        [ -n "${_:-}" ] || true
     fi
     [ -n "$default_policy" ] || default_policy=$DEFAULT_BRANCH_POLICY
 
@@ -128,15 +127,18 @@ _collect_tokens() { # prints "token<TAB>policy"
         } | while read -r t; do
             [ -n "$t" ] && printf '%s\t%s\n' "$t" "$default_policy"
         done
-    } | awk -F'\t' 'NF && !seen[$1]++ { p = ($2 == "" ? "'"$default_policy"'" : $2); print $1 "\t" p }'
+    } | awk -F'\t' -v dp="$default_policy" 'NF && !seen[$1]++ { print $1 "\t" ($2 == "" ? dp : $2) }'
 }
 
 _collect_public() { # prints "kind<TAB>value<TAB>policy"
     local default_policy=${BRANCH_POLICY:-all}
     if [ -r "$CONFIG_FILE" ]; then
-        _cfg '.public[]? | (if .repo then "repo" elif .owner then "owner" else empty end)
+        jq -r --arg dp "$default_policy" '
+            .public[]?
+            | (if .repo then "repo" elif .owner then "owner" else empty end)
               + "\t" + (.repo // .owner)
-              + "\t" + (.branches // "'"$default_policy"'")'
+              + "\t" + (.branches // $dp)
+        ' "$CONFIG_FILE" 2>/dev/null || true
     fi
     _split_list "${PUBLIC_REPOS:-}" | while read -r r; do
         printf 'repo\t%s\t%s\n' "$r" "$default_policy"

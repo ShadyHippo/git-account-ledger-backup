@@ -62,9 +62,11 @@ run_suite() {
 
 # Sleep that can be interrupted by shutdown.
 nap() {
+    local pid
     sleep "$1" &
-    CHILDREN+=("$!")
-    wait "$!" || true
+    pid=$!
+    CHILDREN+=("$pid")
+    wait "$pid" || true
 }
 
 case "$mode" in
@@ -99,7 +101,15 @@ case "$mode" in
 
         log "interval mode: backup every ${BACKUP_INTERVAL:-3600}s, ledger every ${LEDGER_INTERVAL:-900}s, bundles every ${BUNDLE_INTERVAL:-2592000}s, verify every ${VERIFY_INTERVAL:-604800}s"
 
-        ( while :; do "$SELF_DIR/backup.sh" || true; sleep "${BACKUP_INTERVAL:-3600}"; done ) &
+        # Interval mode: ping only on success. A broken backup then *stops*
+        # pinging, which is the correct dead-man's-switch signal and avoids an
+        # alert on every single interval.
+        ( while :; do
+              if "$SELF_DIR/backup.sh"; then
+                  "$SELF_DIR/notify.sh" heartbeat ok || true
+              fi
+              sleep "${BACKUP_INTERVAL:-3600}"
+          done ) &
         CHILDREN+=("$!")
         if [ "${LEDGER_INTERVAL:-900}" -gt 0 ]; then
             ( sleep 30; while :; do "$SELF_DIR/ledger.sh" || true; sleep "$LEDGER_INTERVAL"; done ) &

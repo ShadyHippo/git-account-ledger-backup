@@ -99,12 +99,12 @@ for d in "$SOURCES_DIR"/*/; do
         if [ "$MODE" = "full" ]; then
             out=$(git -C "$dir" fsck --full --strict --no-progress 2>&1) || {
                 fail "$name $full: fsck"
-                printf '%s\n' "$out" | sed 's/^/    /' >> "$LOG_FILE"
+                [ -n "${LOG_FILE:-}" ] && printf '%s\n' "$out" | sed 's/^/    /' >> "$LOG_FILE"
             }
         else
             out=$(git -C "$dir" fsck --connectivity-only --no-progress --no-dangling 2>&1) || {
                 fail "$name $full: fsck"
-                printf '%s\n' "$out" | sed 's/^/    /' >> "$LOG_FILE"
+                [ -n "${LOG_FILE:-}" ] && printf '%s\n' "$out" | sed 's/^/    /' >> "$LOG_FILE"
             }
             # A repo with no refs only produces a notice; ignore it.
             case "$out" in
@@ -112,7 +112,7 @@ for d in "$SOURCES_DIR"/*/; do
             esac
             if [ -n "$out" ] && printf '%s' "$out" | grep -qv '^notice:'; then
                 fail "$name $full: fsck reported objects"
-                printf '%s\n' "$out" | sed 's/^/    /' >> "$LOG_FILE"
+                [ -n "${LOG_FILE:-}" ] && printf '%s\n' "$out" | sed 's/^/    /' >> "$LOG_FILE"
             fi
         fi
 

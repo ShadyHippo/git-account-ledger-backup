@@ -20,8 +20,13 @@ SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$SELF_DIR/config.sh"
 
 LOG_TAG=snapshot
-LOG_FILE="$LOG_DIR/snapshot.log"
-ensure_dirs
+LOG_FILE=""
+# `list` is read-only and must work against a read-only mount; only the
+# destructive subcommands need a writable archive.
+if [ -w "$ROOT" ]; then
+    LOG_FILE="$LOG_DIR/snapshot.log"
+    ensure_dirs
+fi
 
 usage() {
     cat <<'EOF'
@@ -144,9 +149,11 @@ snapshot_repo() { # source, repo, mode, do_bundle, confirm
             tips=$(git -C "$dir" for-each-ref --format='%(refname)=%(objectname)' refs/heads | paste -sd, -)
             log "$name $full: replacing; previous tips: $tips"
 
-            mv -- "$dir" "$dir.pre-snapshot"
+            local bak="$dir.pre-snapshot.$$"
+            rm -rf -- "$bak"
+            mv -- "$dir" "$bak"
             mv -- "$tmp" "$dir"
-            rm -rf -- "$dir.pre-snapshot"
+            rm -rf -- "$bak"
             log "$name $full: replaced with tip-only snapshot"
             ;;
         *)

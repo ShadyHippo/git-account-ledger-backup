@@ -61,7 +61,7 @@ if [ -f "$vmark" ]; then
 fi
 
 if [ "$stale" -gt 0 ]; then
-    echo "$stale/$checked sources stale"
+    echo "$stale problem(s) of $checked checked source(s)"
     exit 1
 fi
 echo "ok: $checked sources fresh"

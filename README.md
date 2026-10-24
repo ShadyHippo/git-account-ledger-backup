@@ -525,7 +525,7 @@ or hand it to Unraid's User Scripts / cron and keep the container idle.
 ## Development
 
 ```bash
-make test     # 147 checks, no network, no Docker (unit + adversarial)
+make test     # 154 checks, no network, no Docker (unit + adversarial)
 make build
 ```
 

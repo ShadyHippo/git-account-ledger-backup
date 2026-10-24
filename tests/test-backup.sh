@@ -146,12 +146,21 @@ check "old tip pinned"              "[ \"\$(git -C '$A' rev-parse refs/archive/$
 check "pin recorded per source"     "grep -q '$sha_b' '$ROOT/sources/alpha/ledger/pinned.tsv'"
 check "aggressive gc keeps pin"     "git -C '$A' gc --prune=now -q && git -C '$A' cat-file -e '$sha_b'"
 
-echo "== a vanished repo is retired, never deleted"
+echo "== a 404 that is still listed upstream is a permission problem, not a deletion"
 rm -rf "$tmp/origins/beta/repo-two.git"
+check "backup reports failure"      "! \"$here/bin/backup.sh\""
+check "NOT retired"                 "[ ! -s '$ROOT/sources/beta/state/retired.tsv' ]"
+check "mirror kept"                 "[ -d '$B' ]"
+
+echo "== a repo that disappears from the account is retired, never deleted"
+mkjson > "$FAKE_ROOT/userrepos_tok-beta.json"
 check "backup exits 0"              "\"$here/bin/backup.sh\""
-check "beta mirror kept"            "[ -d '$B' ]"
 check "retired recorded"            "grep -q 'beta/repo-two' '$ROOT/sources/beta/state/retired.tsv'"
+check "beta mirror kept"            "[ -d '$B' ]"
 check "still in repos.known"        "grep -qxF 'beta/repo-two' '$ROOT/sources/beta/state/repos.known'"
+"$here/bin/backup.sh" > /dev/null 2>&1 || true
+check "retired repos are skipped on the next run" \
+    "tail -8 '$ROOT/log/backup.log' | grep -q '1 skipped'"
 
 echo "== API outage falls back to the known repo list"
 out=$(FAKE_API_FAIL=1 "$here/bin/backup.sh" 2>&1) && rc=0 || rc=$?
@@ -234,6 +243,13 @@ echo "== bundles survive an empty repo and a first run with nothing to prune"
 check "bundle run exits 0"          "BUNDLE_INTERVAL=0 \"$here/bin/bundle.sh\""
 check "no bundle for the empty repo" "[ ! -e \"\$(find '$ROOT/bundles/alpha' -name 'repo-two.bundle' 2>/dev/null | head -1)\" ]"
 check "bundle for the real repo"    "find '$ROOT/bundles/alpha' -name 'repo-one.bundle' | grep -q ."
+
+echo "== an account with no repositories is not a failure"
+printf '[]' > "$FAKE_ROOT/owner_emptysrc.json"
+out=$(PUBLIC_ACCOUNTS=emptysrc "$here/bin/backup.sh" 2>&1) && rc=0 || rc=$?
+check "empty account exits 0"       "[ '$rc' -eq 0 ]"
+check "empty account logged"        "printf '%s' \"\$out\" | grep -q 'no repositories to archive'"
+check "source dir created"          "[ -d '$ROOT/sources/emptysrc' ]"
 
 echo "== notification hooks"
 export FAKE_NOTIFY_LOG="$tmp/notify.log"

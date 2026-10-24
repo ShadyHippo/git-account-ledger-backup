@@ -39,7 +39,14 @@ EOF
 
 # Echo the source that owns a repo, or fail.
 locate() {
-    local full=$1 owner=${1%%/*} repo=${1#*/} d
+    local full=${1:-} owner repo d
+    case "$full" in
+        */*) ;;
+        *) return 1 ;;
+    esac
+    owner=${full%%/*}
+    repo=${full#*/}
+    [ -n "$owner" ] && [ -n "$repo" ] || return 1
     for d in "$SOURCES_DIR"/*/; do
         [ -d "$d" ] || continue
         if [ -d "$d/mirrors/$owner/$repo.git" ]; then

@@ -94,8 +94,8 @@ fetch_repo() { # name, dir, default_branch, errfile
     return 1
 }
 
-mirror_repo() { # name, owner/repo, default_branch
-    local name=$1 full=$2 db=$3
+mirror_repo() { # name, owner/repo, default_branch, allow_retire, api_ok
+    local name=$1 full=$2 db=$3 allow_retire=${4:-0} api_ok=${5:-1}
     local dir shallow=0 lost=0 err="$TMP/fetch.err"
     dir=$(mirror_path "$name" "$full")
 
@@ -119,8 +119,19 @@ mirror_repo() { # name, owner/repo, default_branch
     if ! fetch_repo "$name" "$dir" "$db" "$err"; then
         sed 's/^/    /' "$err" >> "$LOG_FILE" 2>/dev/null || true
         if grep -qiE 'not found|does not appear to be a git repository' "$err" 2>/dev/null; then
-            retire_repo "$name" "$full" "not found upstream"
-            return 0
+            # A 404 is ambiguous: the repo may be deleted, or the token may have
+            # lost access (GitHub hides 403 as 404). Only retire when we are
+            # sure, because retiring is sticky and would freeze the mirror.
+            if [ "$allow_retire" = "1" ]; then
+                retire_repo "$name" "$full" "no longer visible upstream"
+                return 0
+            fi
+            if [ "$api_ok" = "0" ]; then
+                log "unverifiable while the API is unreachable, not retiring: $name $full"
+                return 3
+            fi
+            log "not found but still listed upstream; check the token's access: $name $full"
+            return 1
         fi
         log "fetch failed: $name $full"
         return 1
@@ -167,7 +178,9 @@ mirror_repo() { # name, owner/repo, default_branch
         fi
     done < "$TMP/before.refs"
 
-    if [ -n "$(git -C "$dir" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]; then
+    # Any ref at all means there is something to check; a repo whose only
+    # remaining refs are pinned archive tips still deserves a connectivity check.
+    if [ -n "$(git -C "$dir" for-each-ref --count=1 --format='%(refname)')" ]; then
         if ! git -C "$dir" fsck --connectivity-only --no-progress --no-dangling > "$TMP/fsck.out" 2>&1; then
             log "fsck reported problems: $name $full"
         fi
@@ -185,7 +198,7 @@ retire_repo() { # name, owner/repo, reason
     local name=$1 full=$2 reason=$3 f
     f="$(src_state "$name")/retired.tsv"
     touch "$f"
-    if ! grep -qxF "$full" "$f" 2>/dev/null; then
+    if ! cut -f2 "$f" | grep -qxF "$full"; then
         printf '%s\t%s\t%s\n' "$(ts)" "$full" "$reason" >> "$f"
         printf '%s\t%s\n' "$(ts)" "$full" >> "$(src_ledger "$name")/vanished.tsv"
         log "retired: $name $full ($reason); mirror kept at $(mirror_path "$name" "$full")"
@@ -225,6 +238,10 @@ backup_source() {
         printf '%s\t\n' "$r" >> "$disc"
     done
 
+    # What is visible upstream right now. Used to decide whether a 404 means
+    # "deleted" (retire) or "the token cannot see it any more" (do not retire).
+    cp -f "$disc" "$TMP/$name.fresh"
+
     if [ "$attempted" -eq 1 ] && [ "$discovered" -eq 0 ]; then
         printf 'unreachable\n' > "$state/state"
         warn "$name: discovery failed, falling back to the known repo list"
@@ -245,8 +262,12 @@ backup_source() {
     fi
 
     if [ ! -s "$disc" ]; then
-        log "$name: nothing known and no discovery; skipping"
-        return 1
+        # A reachable account with no repositories is a valid state, not a
+        # failure. A failed discovery with nothing known is also not a failure
+        # to shout about here; the source is already marked unreachable.
+        log "$name: no repositories to archive"
+        date -u +%s > "$state/last-backup-ok"
+        return 0
     fi
 
     awk -F'\t' 'NF { if ($2 != "") db[$1] = $2; else if (!($1 in db)) db[$1] = "" }
@@ -254,12 +275,17 @@ backup_source() {
 
     cut -f1 "$TMP/$name.final" > "$state/repos.known"
 
-    local total=0 ok=0 failed=0 skipped=0 full db
+    local total=0 ok=0 failed=0 skipped=0 unverifiable=0 full db rc
+    local api_ok=1
+    if [ "$attempted" -eq 1 ] && [ "$discovered" -eq 0 ]; then
+        api_ok=0
+    fi
+
     while IFS=$'\t' read -r full db; do
         [ -n "$full" ] || continue
         total=$((total + 1))
 
-        if grep -qxF "$full" "$state/retired.tsv" 2>/dev/null; then
+        if [ -f "$state/retired.tsv" ] && cut -f2 "$state/retired.tsv" | grep -qxF "$full"; then
             skipped=$((skipped + 1))
             continue
         fi
@@ -269,11 +295,23 @@ backup_source() {
         fi
         SEEN[$full]=$name
 
-        if mirror_repo "$name" "$full" "$db"; then
-            ok=$((ok + 1))
-        else
-            failed=$((failed + 1))
+        # Retiring is permanent, so only allow it when the repo is genuinely
+        # absent from a successful discovery, or was named explicitly.
+        local allow_retire=0
+        if ! cut -f1 "$TMP/$name.fresh" | grep -qxF "$full"; then
+            allow_retire=1
         fi
+        case " ${SRC_REPOS[$name]:-} " in
+            *" $full "*) allow_retire=1 ;;
+        esac
+
+        rc=0
+        mirror_repo "$name" "$full" "$db" "$allow_retire" "$api_ok" || rc=$?
+        case "$rc" in
+            0) ok=$((ok + 1)) ;;
+            3) unverifiable=$((unverifiable + 1)) ;;
+            *) failed=$((failed + 1)) ;;
+        esac
     done < "$TMP/$name.final"
 
     cp -f "$TMP/$name.final" "$state/repos.tsv"
@@ -289,7 +327,7 @@ backup_source() {
         fi
     done < "$state/repos.known"
 
-    log "$name: $ok ok, $failed failed, $skipped skipped, $total known, $missing missing"
+    log "$name: $ok ok, $failed failed, $unverifiable unverifiable, $skipped skipped, $total known, $missing missing"
 
     if [ "$failed" -eq 0 ] && [ "$missing" -eq 0 ]; then
         date -u +%s > "$state/last-backup-ok"
