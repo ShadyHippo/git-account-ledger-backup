@@ -377,7 +377,7 @@ Bind the share read-only into any other container:
 
 ```yaml
 volumes:
-  - /mnt/user/gitarchive:/data:ro
+  - /mnt/user/ghbackups:/data:ro
 ```
 
 `verify.sh` notices the mount is not writable and skips its attestation, so it
@@ -397,18 +397,30 @@ drive or object storage monthly. That is the copy that survives the NAS.
 
 ## Quick start
 
-```bash
-git clone https://github.com/ShadyHippo/git-account-ledger-backup.git
-cd git-account-ledger-backup
-cp compose.yaml compose.local.yaml
-$EDITOR compose.local.yaml      # token(s), public repos, share path
-docker compose -f compose.local.yaml up -d
-docker exec gitarchive /usr/local/bin/entrypoint.sh backup
+On this Unraid box the compose file lives with the other stacks:
+
+```
+/mnt/user/appdata/docker_projects/gitarchive/compose.yaml
 ```
 
-On Unraid: create the share `gitarchive` with **Use cache: no** (array only —
-on the cache it is outside parity), then paste `compose.yaml` into Compose
-Manager or translate it into a container template. No ports.
+and the archive is written to the array share:
+
+```
+/mnt/user/ghbackups/data/…
+```
+
+```bash
+mkdir -p /mnt/user/appdata/docker_projects/gitarchive
+cd /mnt/user/appdata/docker_projects/gitarchive
+# put compose.yaml here, edit the token
+docker compose up -d
+```
+
+Create the `ghbackups` share first with **Use cache: no** (array only — on the
+cache it is outside parity). No ports are published.
+
+The container sees the archive at `/data`; on the host it is
+`/mnt/user/ghbackups`.
 
 ### Tokens
 

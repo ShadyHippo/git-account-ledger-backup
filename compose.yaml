@@ -1,3 +1,11 @@
+# Deploy location on Tower:
+#   /mnt/user/appdata/docker_projects/gitarchive/compose.yaml
+#
+# Backups are written to the array share:
+#   /mnt/user/ghbackups
+
+name: gitarchive
+
 services:
   gitarchive:
     image: ghcr.io/shadyhippo/git-account-ledger-backup:latest
@@ -7,61 +15,52 @@ services:
     environment:
       TZ: America/New_York
 
-      # --- EDIT THESE -------------------------------------------------------
-      # One or more read-only PATs. Each token's account gets its own
-      # directory under /data/sources/<login>/.
-      GITHUB_RO_TOKENS: "PASTE_READ_ONLY_PAT_HERE"
+      # --- EDIT THIS ONE LINE -------------------------------------------------
+      # Fine-grained PAT, "All repositories", Contents: Read-only.
+      # Covers every ShadyHippo repo, public and private.
+      GITHUB_RO_TOKENS: "PASTE_YOUR_READ_ONLY_PAT_HERE"
+      # -----------------------------------------------------------------------
 
-      # Third-party repos or accounts you want archived. Optional.
-      # A specific repo, or a whole owner, comma separated:
-      # PUBLIC_REPOS: "someuser/SomethingInteresting"
-      # PUBLIC_ACCOUNTS: "artcraft"
+      # ArtCraft + the MS-Office equivalents (wordcraft/gridcraft/deckcraft)
+      # and the rest of the Craft apps: ~7.2 GiB across 69 repos.
+      PUBLIC_ACCOUNTS: "storytold"
 
-      # all | default | a comma separated list with globs, e.g. "main,release/*"
-      BRANCH_POLICY: "all"
-      # ---------------------------------------------------------------------
+      # Narrower alternative — swap PUBLIC_ACCOUNTS for this if you only want
+      # the ArtCraft family and the three Office apps:
+      # PUBLIC_REPOS: "storytold/artcraft,storytold/artcraftx,storytold/artcraft-services,storytold/craft-libs,storytold/craft-launcher,storytold/craft-launcher-assets,storytold/craft-common-actions,storytold/craft-fonts,storytold/craft-i18n,storytold/craft-ai-integrations,storytold/wordcraft,storytold/gridcraft,storytold/deckcraft"
 
-      # One full pass per night: backup, ledger, bundle (only if due), verify.
-      # Set SCHEDULE_AT to "" to switch to the interval knobs below instead.
+      # One full pass per night: backup, ledger, bundle (if due), verify.
       SCHEDULE_AT: "03:15"
       RUN_ON_STARTUP: "1"
+
+      # Bundle generations are full standalone copies. ~10 GiB each here,
+      # so keep 3, not 6.
+      BUNDLE_KEEP: "3"
 
       # 0 disables the push-event ledger. It is an audit/undo convenience;
       # pinning and verification do not depend on it.
       LEDGER_INTERVAL: "900"
 
-      # Bundles do not run nightly regardless of schedule: they do not
-      # deduplicate, so one generation per month is the default.
+      # Bundles never run nightly regardless of schedule.
       BUNDLE_INTERVAL: "2592000"
-      BUNDLE_KEEP: "6"
-
-      # Interval-mode only. Ignored while SCHEDULE_AT is set.
-      BACKUP_INTERVAL: "3600"
-      VERIFY_INTERVAL: "604800"
 
       # --- Notifications (optional; any one is enough) ----------------------
-      # Alerts when a pass fails, with detail:
       # NTFY_URL: "https://ntfy.sh"
       # NTFY_TOPIC: "gitarchive"
-      # ALERT_URL: "https://example.com/hook"     # POST {"title","text"}
-      #
-      # Pings after every CLEAN pass. This is the dead-man's switch: it is the
-      # only layer that notices the container being gone, because a dead
-      # container cannot send its own failure alert.
+      # ALERT_URL: "https://example.com/hook"
       # HEARTBEAT_URL: "https://hc-ping.com/YOUR-UUID"
 
     volumes:
-      # Point this at a share on the array (Use cache: no).
-      - /mnt/user/gitarchive:/data
-      # Optional per-source policies (see config.example.json). Mounted
-      # read-only; tokens may live here instead of in the environment.
-      # - /mnt/user/appdata/gitarchive/config.json:/config/config.json:ro
+      # Array share. Must be "Use cache: no" in Unraid.
+      - /mnt/user/ghbackups:/data
+      # Optional per-source policies. Leave commented unless you need them.
+      # - /mnt/user/appdata/docker_projects/gitarchive/config.json:/config/config.json:ro
 
     read_only: true
     tmpfs:
       - /tmp
     security_opt:
       - no-new-privileges:true
-    mem_limit: 1g
+    mem_limit: 2g
 
     # No ports. Outbound HTTPS only.
