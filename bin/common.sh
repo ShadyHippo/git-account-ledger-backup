@@ -97,6 +97,11 @@ build_refspecs() { # policy, default_branch
         default)
             if [ -n "$db" ]; then
                 printf '+refs/heads/%s:refs/heads/%s\n' "$db" "$db"
+            else
+                # Unknown default branch: cover both conventions rather than
+                # silently fetching nothing.
+                printf '+refs/heads/main:refs/heads/main\n'
+                printf '+refs/heads/master:refs/heads/master\n'
             fi
             ;;
         *)

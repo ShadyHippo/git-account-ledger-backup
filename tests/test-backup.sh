@@ -137,6 +137,7 @@ check "beta tracks main"            "git -C '$B' rev-parse -q --verify refs/head
 check "public tracks main"          "git -C '$C' rev-parse -q --verify refs/heads/main"
 check "public tracks release/1.0"   "git -C '$C' rev-parse -q --verify refs/heads/release/1.0"
 check "public ignores dev/experiment" "! git -C '$C' rev-parse -q --verify refs/heads/dev/experiment"
+check "explicit repo learned its default branch" "cut -f2 '$ROOT/sources/artcraft/state/repos.tsv' | grep -qx main"
 
 echo "== force-push must not destroy the old tip"
 git -C "$tmp/work/alpha_repo-one" push -q -f origin "$sha_a:main"

@@ -64,6 +64,11 @@ case "$url" in
         repo=$(printf '%s' "$url" | sed 's|.*/repos/||; s|/events.*||; s|/|_|g')
         f="$FAKE_ROOT/events_$repo.json"
         ;;
+    */repos/*/*)
+        # Repository detail, used to learn default_branch for explicit repos.
+        printf '{"default_branch":"main"}\n'
+        exit 0
+        ;;
     */user)
         f="$FAKE_ROOT/user_${auth:-anon}.json"
         ;;

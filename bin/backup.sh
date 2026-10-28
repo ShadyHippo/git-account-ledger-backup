@@ -139,6 +139,23 @@ mirror_repo() { # name, owner/repo, default_branch, allow_retire, api_ok
 
     if [ -n "${db:-}" ] && git -C "$dir" rev-parse --verify -q "refs/heads/$db" > /dev/null; then
         git -C "$dir" symbolic-ref HEAD "refs/heads/$db"
+    else
+        # Explicit repos are never discovered, so default_branch may be unknown.
+        # A HEAD pointing at a branch that does not exist makes `git clone` of
+        # the mirror produce an empty worktree, so resolve it from what is here.
+        local cand pick=""
+        for cand in main master; do
+            if git -C "$dir" rev-parse --verify -q "refs/heads/$cand" > /dev/null; then
+                pick=$cand
+                break
+            fi
+        done
+        if [ -z "$pick" ]; then
+            pick=$(git -C "$dir" for-each-ref --count=1 --format='%(refname:short)' refs/heads)
+        fi
+        if [ -n "$pick" ]; then
+            git -C "$dir" symbolic-ref HEAD "refs/heads/$pick"
+        fi
     fi
 
     [ -f "$dir/shallow" ] && shallow=1
@@ -192,6 +209,13 @@ mirror_repo() { # name, owner/repo, default_branch, allow_retire, api_ok
 
     [ "$lost" -eq 1 ] && return 2
     return 0
+}
+
+learn_default_branch() { # name, owner/repo -> prints the branch or nothing
+    local name=$1 full=$2 t
+    t=$(source_token_list "$name" | awk '{print $1}')
+    gh_api "$t" "$API_BASE_URL/repos/$full" 2> /dev/null \
+        | jq -r '.default_branch // empty' 2> /dev/null || true
 }
 
 retire_repo() { # name, owner/repo, reason
@@ -277,6 +301,7 @@ backup_source() {
 
     local total=0 ok=0 failed=0 skipped=0 unverifiable=0 full db rc
     local api_ok=1
+    : > "$TMP/$name.learned"
     if [ "$attempted" -eq 1 ] && [ "$discovered" -eq 0 ]; then
         api_ok=0
     fi
@@ -305,6 +330,15 @@ backup_source() {
             *" $full "*) allow_retire=1 ;;
         esac
 
+        # Explicit repos are never discovered, so their default branch has to be
+        # asked for once. Learned values persist in repos.tsv.
+        if [ -z "${db:-}" ] && [ "$api_ok" -eq 1 ]; then
+            db=$(learn_default_branch "$name" "$full")
+            if [ -n "$db" ]; then
+                printf '%s\t%s\n' "$full" "$db" >> "$TMP/$name.learned"
+            fi
+        fi
+
         rc=0
         mirror_repo "$name" "$full" "$db" "$allow_retire" "$api_ok" || rc=$?
         case "$rc" in
@@ -314,7 +348,9 @@ backup_source() {
         esac
     done < "$TMP/$name.final"
 
-    cp -f "$TMP/$name.final" "$state/repos.tsv"
+    cat "$TMP/$name.final" "$TMP/$name.learned" \
+        | awk -F'\t' 'NF { if ($2 != "") db[$1] = $2; else if (!($1 in db)) db[$1] = "" }
+            END { for (r in db) print r "\t" db[r] }' | sort > "$state/repos.tsv"
 
     # Integrity: anything we believe we hold that is not on disk, and that was
     # not rebuilt above (retired repos are skipped), is an incident.
