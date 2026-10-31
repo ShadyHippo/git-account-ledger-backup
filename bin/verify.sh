@@ -65,6 +65,15 @@ total_repos=0
 total_refs=0
 total_pins=0
 total_bytes=0
+
+# A backup that is still running legitimately has repos it has not created
+# yet. Distinguish "in progress" from "was here and vanished" by checking
+# whether the mirror lock is held.
+lockbusy=0
+if [ -r "$ROOT/.lock.mirror" ]; then
+    exec 9< "$ROOT/.lock.mirror" || true
+    flock -n 9 2> /dev/null || lockbusy=1
+fi
 digest_input=$(mktemp)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP" "$digest_input"' EXIT
@@ -91,7 +100,11 @@ for d in "$SOURCES_DIR"/*/; do
         s_repos=$((s_repos + 1))
 
         if [ ! -d "$dir" ]; then
-            fail "$name $full: mirror directory is gone"
+            if [ "$lockbusy" -eq 1 ]; then
+                log "not created yet (backup in progress): $name $full"
+            else
+                fail "$name $full: mirror directory is gone"
+            fi
             continue
         fi
 
@@ -201,5 +214,8 @@ if [ "$WRITE" -eq 1 ]; then
     date -u +%s > "$VERIFY_DIR/last-ok"
 fi
 
+if [ "$lockbusy" -eq 1 ]; then
+    printf '\nNOTE: a backup is running; repos it has not reached yet are not counted.\n'
+fi
 printf '\n\033[32mok\033[0m: every mirror, ref and pinned commit is present and readable\n'
 log "verify ok: $total_repos repos, $total_refs refs, $total_pins pinned, sha256:$digest"
