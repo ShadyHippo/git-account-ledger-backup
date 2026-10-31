@@ -17,6 +17,11 @@ SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=common.sh
 . "$SELF_DIR/common.sh"
 
+# The digest is an attestation: it must be identical for an identical archive
+# no matter who runs the check. sort() orders differently under UTF-8
+# collation, which silently changed the digest between environments.
+export LC_ALL=C
+
 LOG_TAG=verify
 LOG_FILE="$LOG_DIR/verify.log"
 VERIFY_DIR="$ROOT/verify"
