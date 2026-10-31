@@ -105,7 +105,7 @@ mirror_repo() { # name, owner/repo, default_branch, allow_retire, api_ok
             lost=1
             LOST=$((LOST + 1))
         else
-            log "creating mirror: $name $full"
+            log "creating archive: $name $full"
         fi
         mkdir -p -- "$(dirname -- "$dir")"
         git init -q --bare "$dir"
